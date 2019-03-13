@@ -316,8 +316,20 @@ struct output {
 	/* Buffers allocated by us. */
 	struct buffer *buffers[BUFFER_QUEUE_DEPTH];
 
-	/* Last buffer committed to KMS. */
-	struct buffer *last_buffer;
+	/*
+	 * The buffer we've just committed to KMS, waiting for it to send the
+	 * atomic-complete event to tell us it's started displaying; set by
+	 * repaint_one_output and cleared by atomic_event_handler.
+	 */
+	struct buffer *buffer_pending;
+
+	/*
+	 * The buffer currently being displayed by KMS, having been advanced
+	 * from buffer_pending inside atomic_event_handler, then cleared by
+	 * atomic_event_handler when the hardware starts displaying the next
+	 * buffer.
+	 */
+	struct buffer *buffer_last;
 
 	/*
 	 * Time the last frame's commit completed from KMS, and when the

@@ -116,10 +116,21 @@ static void atomic_event_handler(int fd,
 
 	output->needs_repaint = true;
 	output->last_frame = completion;
-	assert(output->last_buffer);
-	assert(output->last_buffer->in_use);
-	output->last_buffer->in_use = false;
-	output->last_buffer = NULL;
+
+	/*
+	 * buffer_pending is the buffer we've just committed; this event tells
+	 * us that buffer_pending is now being displayed, which means that
+	 * buffer_last is no longer being displayed and we can reuse it.
+	 */
+	assert(output->buffer_pending);
+	assert(output->buffer_pending->in_use);
+	if (output->buffer_last) {
+		assert(output->buffer_last->in_use);
+		output->buffer_last->in_use = false;
+		output->buffer_last = NULL;
+	}
+	output->buffer_last = output->buffer_pending;
+	output->buffer_pending = NULL;
 }
 
 /*
@@ -170,7 +181,7 @@ static void repaint_one_output(struct output *output, drmModeAtomicReqPtr req,
 	buffer_fill(buffer, output->frame_num);
 	output_add_atomic_req(output, req, buffer);
 	buffer->in_use = true;
-	output->last_buffer = buffer;
+	output->buffer_pending = buffer;
 	output->needs_repaint = false;
 
 	/*
