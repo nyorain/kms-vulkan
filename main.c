@@ -221,10 +221,21 @@ int main(int argc, char *argv[])
 		struct output *output = device->outputs[i];
 		int j;
 
+		if (device->gbm_device) {
+			ret = output_egl_setup(output);
+			if (!ret) {
+				fprintf(stderr,
+					"Couldn't set up EGL for output %s\n",
+					output->name);
+				ret = 2;
+				goto out;
+			}
+		}
+
 		for (j = 0; j < BUFFER_QUEUE_DEPTH; j++) {
 			output->buffers[j] = buffer_create(device, output);
 			if (!output->buffers[j]) {
-				ret = 2;
+				ret = 3;
 				goto out;
 			}
 		}
@@ -247,6 +258,10 @@ int main(int argc, char *argv[])
 		req = drmModeAtomicAlloc();
 		assert(req);
 
+		/*
+		 * See which of our outputs needs repainting, and repaint them
+		 * if any.
+		 */
 		for (int i = 0; i < device->num_outputs; i++) {
 			struct output *output = device->outputs[i];
 			if (output->needs_repaint) {
@@ -257,6 +272,22 @@ int main(int argc, char *argv[])
 
 		if (output_count)
 			ret = atomic_commit(device, req, needs_modeset);
+
+		/*
+		 * The out-fence FD from KMS signals when the commit we've just
+		 * made becomes active, at the same time as the event handler
+		 * will fire. We can use this to find when the _previous_
+		 * buffer is free to reuse again.
+		 */
+		for (int i = 0; i < device->num_outputs; i++) {
+			struct output *output = device->outputs[i];
+			if (output->explicit_fencing && output->buffer_last) {
+				fd_replace(&output->buffer_last->kms_fence_fd,
+					   output->commit_fence_fd);
+				output->commit_fence_fd = -1;
+
+			}
+		}
 
 		drmModeAtomicFree(req);
 		if (ret != 0) {

@@ -23,6 +23,7 @@
  * Author: Daniel Stone <daniels@collabora.com>
  */
 
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
@@ -43,6 +44,13 @@
 #include <xf86drm.h>
 #include <xf86drmMode.h>
 
+/* GBM allocates buffers we can use with both EGL and KMS. */
+#include <gbm.h>
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#include <GLES2/gl2.h>
+#include <GLES2/gl2ext.h>
+
 /* Utility header from Weston to more easily handle time values. */
 #include "timespec-util.h"
 
@@ -52,6 +60,8 @@
 #else
 #define debug(...) /**/
 #endif
+
+#define error(...) fprintf(stderr, __VA_ARGS__)
 
 #define ARRAY_LENGTH(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -151,6 +161,7 @@ enum wdrm_dpms_state {
 enum wdrm_crtc_property {
 	WDRM_CRTC_MODE_ID = 0,
 	WDRM_CRTC_ACTIVE,
+	WDRM_CRTC_OUT_FENCE_PTR,
 	WDRM_CRTC__COUNT
 };
 
@@ -190,7 +201,7 @@ struct buffer {
 	 *
 	 * 0 is always an invalid GEM handle.
 	 */
-	uint32_t gem_handle;
+	uint32_t gem_handles[4];
 
 	/*
 	 * Framebuffers wrap GEM buffers with additional metadata such as the
@@ -200,6 +211,17 @@ struct buffer {
 	 * 0 is always an invalid framebuffer id.
 	 */
 	uint32_t fb_id;
+
+	/*
+	 * dma_fence FD for completion of the rendering to this buffer.
+	 */
+	int render_fence_fd;
+
+	/*
+	 * dma_fence FD for completion of the last KMS commit this buffer
+	 * was used in.
+	 */
+	int kms_fence_fd;
 
 	/*
 	 * The format and modifier together describe how the image is laid
@@ -233,9 +255,17 @@ struct buffer {
 		unsigned int size;
 	} dumb;
 
+	struct {
+		struct gbm_bo *bo;
+		EGLImage img;
+		GLuint tex_id;
+		GLuint fbo_id;
+	} gbm;
+
 	unsigned int width;
 	unsigned int height;
-	unsigned int pitch; /* in bytes */
+	unsigned int pitches[4]; /* in bytes */
+	unsigned int offsets[4]; /* in bytes */
 };
 
 /*
@@ -313,6 +343,11 @@ struct output {
 	drmModeModeInfo mode;
 	int64_t refresh_interval_nsec;
 
+	/* Whether or not the output supports explicit fencing. */
+	bool explicit_fencing;
+	/* Fence FD for completion of the last atomic commit. */
+	int commit_fence_fd;
+
 	/* Buffers allocated by us. */
 	struct buffer *buffers[BUFFER_QUEUE_DEPTH];
 
@@ -342,6 +377,14 @@ struct output {
 	 * The frame of the animation to display.
 	 */
 	unsigned int frame_num;
+
+	struct {
+		EGLConfig cfg;
+		EGLContext ctx;
+		GLuint gl_prog;
+		GLuint pos_attr;
+		GLuint col_uniform;
+	} egl;
 };
 
 /*
@@ -379,6 +422,11 @@ struct device {
 	/* Whether or not the device supports format modifiers. */
 	bool fb_modifiers;
 
+	/* The GBM device is our buffer allocator, and we create an EGL
+	 * display from that to import buffers into. */
+	struct gbm_device *gbm_device;
+	EGLDisplay egl_dpy;
+
 	/* Populated by us, to combine plane -> CRTC -> connector. */
 	struct output **outputs;
 	int num_outputs;
@@ -393,6 +441,7 @@ struct device {
  * and sets up VT/TTY handling ready to display content.
  */
 struct device *device_create(void);
+bool device_egl_setup(struct device *device);
 void device_destroy(struct device *device);
 
 /*
@@ -401,14 +450,18 @@ void device_destroy(struct device *device);
  */
 struct output *output_create(struct device *device,
 			     drmModeConnectorPtr connector);
+bool output_egl_setup(struct output *output);
+void output_egl_destroy(struct output *output);
 void output_destroy(struct output *output);
 
 /* Create and destroy framebuffers for a given output. */
 struct buffer *buffer_create(struct device *device, struct output *output);
+struct buffer *buffer_egl_create(struct device *device, struct output *output);
 void buffer_destroy(struct buffer *buffer);
 
 /* Fill a buffer for a given animation step. */
 void buffer_fill(struct buffer *buffer, int frame_num);
+void buffer_egl_fill(struct buffer *buffer, int frame_num);
 
 /*
  * Adds an output's state to an atomic request, setting it up to display a
@@ -443,3 +496,22 @@ struct edid_info {
 
 struct edid_info *
 edid_parse(const uint8_t *data, size_t length);
+
+bool
+gl_extension_supported(const char *haystack, const char *needle);
+
+static void
+fd_replace(int *target, int source)
+{
+	if (*target >= 0)
+		close(*target);
+	*target = source;
+}
+
+static void
+fd_dup_into(int *target, int source)
+{
+	int duped = fcntl(source, F_DUPFD_CLOEXEC, 0);
+	assert(duped >= 0);
+	fd_replace(target, duped);
+}

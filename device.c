@@ -181,6 +181,7 @@ static void vt_reset(struct device *device)
 static struct device *device_open(const char *filename)
 {
 	struct device *ret = calloc(1, sizeof(*ret));
+	const char *gbm_env;
 	drmModePlaneResPtr plane_res;
 	drm_magic_t magic;
 	uint64_t cap;
@@ -272,9 +273,25 @@ static struct device *device_open(const char *filename)
 		goto err_outputs;
 	}
 
-	printf("using device %s with %d outputs\n", filename, ret->num_outputs);
+	/*
+	 * If using GPU rendering, create a GBM device to allocate buffers
+	 * for us, then an EGLDisplay we can use to connect EGL to KMS.
+	 *
+	 * We don't create surfaces or contexts here; we'll do that later
+	 * in per-output setup.
+	 */
+	if (!getenv("KMS_NO_GBM"))
+		ret->gbm_device = gbm_create_device(ret->kms_fd);
+	if (ret->gbm_device && !device_egl_setup(ret))
+		goto err_gbm;
+
+	printf("using device %s with %d outputs and %s rendering\n",
+	       filename, ret->num_outputs,
+	       (ret->gbm_device) ? "GPU" : "software");
 	return ret;
 
+err_gbm:
+	gbm_device_destroy(ret->gbm_device);
 err_outputs:
 	free(ret->outputs);
 	for (int i = 0; i < ret->num_planes; i++)
@@ -356,6 +373,9 @@ void device_destroy(struct device *device)
 	for (int i = 0; i < device->num_outputs; i++)
 		output_destroy(device->outputs[i]);
 	free(device->outputs);
+
+	if (device->gbm_device)
+		gbm_device_destroy(device->gbm_device);
 
 	close(device->kms_fd);
 	free(device);

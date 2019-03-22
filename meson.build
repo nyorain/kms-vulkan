@@ -20,8 +20,15 @@ if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimi
   defines += '-DDEBUG'
 endif
 
+deps = [
+  dependency('libdrm'),
+  dependency('gbm'),
+  dependency('egl'),
+  dependency('glesv2'),
+]
+
 executable('kms-skeleton',
-  'main.c', 'buffer.c', 'device.c', 'edid.c', 'kms.c',
-  dependencies: [ dependency('libdrm') ],
+  'main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c',
+  dependencies: deps,
   c_args: defines,
 )

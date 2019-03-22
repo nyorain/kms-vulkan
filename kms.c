@@ -125,6 +125,7 @@ static const struct drm_property_info connector_props[] = {
 static const struct drm_property_info crtc_props[] = {
 	[WDRM_CRTC_MODE_ID] = { .name = "MODE_ID", },
 	[WDRM_CRTC_ACTIVE] = { .name = "ACTIVE", },
+	[WDRM_CRTC_OUT_FENCE_PTR] = { .name = "OUT_FENCE_PTR", },
 };
 
 /**
@@ -617,6 +618,14 @@ struct output *output_create(struct device *device,
 	output_get_edid(output, props);
 	drmModeFreeObjectProperties(props);
 
+	/*
+	 * Set if we support explicit fencing inside KMS; the EGL renderer will
+	 * clear this if it doesn't support it.
+	 */
+	output->explicit_fencing =
+		(output->props.plane[WDRM_PLANE_IN_FENCE_FD].prop_id &&
+		 output->props.crtc[WDRM_CRTC_OUT_FENCE_PTR].prop_id);
+
 	drmModeFreePlane(plane);
 out_crtc:
 	drmModeFreeCrtc(crtc);
@@ -727,6 +736,10 @@ void output_add_atomic_req(struct output *output, drmModeAtomicReqPtr req,
 	 * as we just use a full-size uncropped image, we don't need this.
 	 */
 	ret |= plane_add_prop(req, output, WDRM_PLANE_FB_ID, buffer->fb_id);
+	if (output->explicit_fencing && buffer->render_fence_fd) {
+		ret |= plane_add_prop(req, output, WDRM_PLANE_IN_FENCE_FD,
+				      buffer->render_fence_fd);
+	}
 	ret |= plane_add_prop(req, output, WDRM_PLANE_SRC_X, 0);
 	ret |= plane_add_prop(req, output, WDRM_PLANE_SRC_Y, 0);
 	ret |= plane_add_prop(req, output, WDRM_PLANE_SRC_W,
@@ -757,6 +770,20 @@ void output_add_atomic_req(struct output *output, drmModeAtomicReqPtr req,
 	ret |= crtc_add_prop(req, output, WDRM_CRTC_MODE_ID,
 			     output->mode_blob_id);
 	ret |= crtc_add_prop(req, output, WDRM_CRTC_ACTIVE, 1);
+
+	if (output->explicit_fencing) {
+		if (output->commit_fence_fd >= 0)
+			close(output->commit_fence_fd);
+		output->commit_fence_fd = -1;
+
+		/*
+		 * OUT_FENCE_PTR takes a pointer as a value, which the kernel
+		 * fills in at commit time. The fence signals when the commit
+		 * completes, i.e. when the event we request is sent.
+		 */
+		ret |= crtc_add_prop(req, output, WDRM_CRTC_OUT_FENCE_PTR,
+				     (uint64_t) (uintptr_t) &output->commit_fence_fd);
+	}
 
 	ret |= connector_add_prop(req, output, WDRM_CONNECTOR_CRTC_ID,
 				  output->crtc_id);

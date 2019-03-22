@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #include <sys/mman.h>
 
 #include "kms-skeleton.h"
@@ -44,6 +45,11 @@ void buffer_fill(struct buffer *buffer, int frame_num)
 {
 	struct output *output = buffer->output;
 
+	if (buffer->gbm.bo) {
+		buffer_egl_fill(buffer, frame_num);
+		return;
+	}
+
 	for (unsigned int y = 0; y < buffer->height; y++) {
 		/*
 		 * We play silly games with pointer types so we advance
@@ -51,7 +57,7 @@ void buffer_fill(struct buffer *buffer, int frame_num)
 		 */
 		uint8_t b;
 		uint32_t *pix =
-			(uint32_t *) ((uint8_t *) buffer->dumb.mem + (y * buffer->pitch));
+			(uint32_t *) ((uint8_t *) buffer->dumb.mem + (y * buffer->pitches[0]));
 		if (y >= (buffer->height * output->frame_num) / NUM_ANIM_FRAMES)
 			b = 0xff;
 		else
@@ -81,14 +87,12 @@ void buffer_fill(struct buffer *buffer, int frame_num)
  * comprehensive example of multiple buffer types:
  *   https://gitlab.freedesktop.org/wayland/weston/tree/master/libweston/compositor-drm.c
  */
-struct buffer *buffer_create(struct device *device, struct output *output)
+static struct buffer *buffer_dumb_create(struct device *device, struct output *output)
 {
 	struct buffer *ret = calloc(1, sizeof(*ret));
 	struct drm_mode_create_dumb create;
 	struct drm_mode_map_dumb map;
 	struct drm_mode_destroy_dumb destroy;
-	uint32_t handles[4] = { 0 }, pitches[4] = { 0 }, offsets[4] = { 0 };
-	uint64_t modifiers[4] = { DRM_FORMAT_MOD_LINEAR, };
 	unsigned int m;
 	int err;
 
@@ -136,57 +140,14 @@ struct buffer *buffer_create(struct device *device, struct output *output)
 	assert(create.size >= create.pitch * create.height);
 
 	ret->output = output;
-	ret->gem_handle = create.handle;
+	ret->gem_handles[0] = create.handle;
 	ret->format = DRM_FORMAT_XRGB8888;
 	ret->modifier = DRM_FORMAT_MOD_LINEAR;
 	ret->width = create.width;
 	ret->height = create.height;
-	ret->pitch = create.pitch;
-
-	debug("[GEM:%" PRIu32 "]: %u x %u buffer, pitch %u\n", ret->gem_handle,
-	      ret->width, ret->height, ret->pitch);
-
-	/*
-	 * Wrap our GEM buffer in a KMS framebuffer, so we can then attach it
-	 * to a plane.
-	 *
-	 * drmModeAddFB2 accepts multiple image planes (not to be confused with
-	 * the KMS plane objects!), for images which have multiple buffers.
-	 * For example, YUV images may have the luma (Y) components in a
-	 * separate buffer to the chroma (UV) components.
-	 *
-	 * When using modifiers (which this example does not), we can also have
-	 * multiple planes even for RGB images, as image compression often uses
-	 * an auxiliary buffer to store compression metadata.
-	 *
-	 * Dumb buffers are always strictly single-planar, so we do not need
-	 * the extra planes nor the offset field.
-	 */
-	handles[0] = ret->gem_handle;
-	pitches[0] = ret->pitch;
-
-	/*
-	 * AddFB2WithModifiers takes a list of modifiers per plane, however
-	 * the kernel enforces that they must be the same for each plane
-	 * which is there, and 0 for everything else.
-	 */
-	if (device->fb_modifiers)
-		err = drmModeAddFB2WithModifiers(device->kms_fd,
-						 ret->width, ret->height,
-						 ret->format,
-						 handles, pitches, offsets,
-						 modifiers, &ret->fb_id,
-						 DRM_MODE_FB_MODIFIERS);
-	else
-		err = drmModeAddFB2(device->kms_fd, ret->width, ret->height,
-			    	    ret->format, handles, pitches, offsets,
-				    &ret->fb_id, 0);
-
-	if (err != 0 || ret->fb_id == 0) {
-		fprintf(stderr, "failed AddFB2 on %u x %u dumb buffer: %m\n",
-			ret->width, ret->height);
-		goto err_dumb;
-	}
+	ret->pitches[0] = create.pitch;
+	ret->render_fence_fd = -1;
+	ret->kms_fence_fd = -1;
 
 	/*
 	 * In order to map the buffer, we call an ioctl specific to the buffer
@@ -197,13 +158,13 @@ struct buffer *buffer_create(struct device *device, struct output *output)
 	 * buffers without specifically requesting it from the kernel.
 	 */
 	map = (struct drm_mode_map_dumb) {
-		.handle = ret->gem_handle,
+		.handle = ret->gem_handles[0],
 	};
 	err = drmIoctl(device->kms_fd, DRM_IOCTL_MODE_MAP_DUMB, &map);
 	if (err != 0) {
 		fprintf(stderr, "failed to get %u x %u mmap offset: %m\n",
 			ret->width, ret->height);
-		goto err_fb;
+		goto err_dumb;
 	}
 
 	ret->dumb.mem = mmap(NULL, create.size, PROT_WRITE, MAP_SHARED,
@@ -211,14 +172,12 @@ struct buffer *buffer_create(struct device *device, struct output *output)
 	if (ret->dumb.mem == MAP_FAILED) {
 		fprintf(stderr, "failed to mmap %u x %u dumb buffer: %m\n",
 			ret->width, ret->height);
-		goto err_fb;
+		goto err_dumb;
 	}
 	ret->dumb.size = create.size;
 
 	return ret;
 
-err_fb:
-	drmModeRmFB(device->kms_fd, ret->fb_id);
 err_dumb:
 	destroy = (struct drm_mode_destroy_dumb) { .handle = create.handle };
 	drmIoctl(device->kms_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
@@ -227,16 +186,93 @@ err:
 	return NULL;
 }
 
+struct buffer *buffer_create(struct device *device, struct output *output)
+{
+	struct buffer *ret;
+	uint64_t modifiers[4] = { 0, };
+	int err;
+
+	if (device->gbm_device)
+		ret = buffer_egl_create(device, output);
+	else
+		ret = buffer_dumb_create(device, output);
+
+	if (!ret)
+		return NULL;
+
+	for (int i = 0; ret->gem_handles[i]; i++) {
+		modifiers[i] = ret->modifier;
+		debug("[GEM:%" PRIu32 "]: %u x %u %s buffer (plane %d), pitch %u\n",
+		      ret->gem_handles[i], ret->width, ret->height,
+		      (ret->dumb.mem) ? "dumb" : "GBM",
+		      i, ret->pitches[i]);
+	}
+
+	/*
+	 * Wrap our GEM buffer in a KMS framebuffer, so we can then attach it
+	 * to a plane.
+	 *
+	 * drmModeAddFB2 accepts multiple image planes (not to be confused with
+	 * the KMS plane objects!), for images which have multiple buffers.
+	 * For example, YUV images may have the luma (Y) components in a
+	 * separate buffer to the chroma (UV) components.
+	 *
+	 * When using modifiers (which we do not for dumb buffers), we can also
+	 * have multiple planes even for RGB images, as image compression often
+	 * uses an auxiliary buffer to store compression metadata.
+	 *
+	 * Dumb buffers are always strictly single-planar, so we do not need
+	 * the extra planes nor the offset field.
+	 *
+	 * AddFB2WithModifiers takes a list of modifiers per plane, however
+	 * the kernel enforces that they must be the same for each plane
+	 * which is there, and 0 for everything else.
+	 */
+	if (device->fb_modifiers) {
+		err = drmModeAddFB2WithModifiers(device->kms_fd,
+						 ret->width, ret->height,
+						 ret->format,
+						 ret->gem_handles,
+						 ret->pitches,
+						 ret->offsets,
+						 modifiers, &ret->fb_id,
+						 DRM_MODE_FB_MODIFIERS);
+	} else {
+		err = drmModeAddFB2(device->kms_fd, ret->width, ret->height,
+			    	    ret->format, ret->gem_handles, ret->pitches,
+				    ret->offsets, &ret->fb_id, 0);
+	}
+
+	if (err != 0 || ret->fb_id == 0) {
+		fprintf(stderr, "failed AddFB2 on %u x %u %s (modifier 0x%" PRIx64 ") buffer: %m\n",
+			ret->width, ret->height,
+			(ret->dumb.mem) ? "dumb" : "GBM",
+			ret->modifier);
+		goto err;
+	}
+	return ret;
+
+err:
+	buffer_destroy(ret);
+	return NULL;
+}
+
 void buffer_destroy(struct buffer *buffer)
 {
 	struct output *output = buffer->output;
 	struct device *device = output->device;
-	struct drm_mode_destroy_dumb destroy = {
-		.handle = buffer->gem_handle,
-	};
 
-	munmap(buffer->dumb.mem, buffer->dumb.size);
 	drmModeRmFB(device->kms_fd, buffer->fb_id);
-	drmIoctl(device->kms_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+
+	if (buffer->dumb.mem) {
+		struct drm_mode_destroy_dumb destroy = {
+			.handle = buffer->gem_handles[0],
+		};
+
+		munmap(buffer->dumb.mem, buffer->dumb.size);
+		drmIoctl(device->kms_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
+	} else if (buffer->gbm.bo) {
+		gbm_bo_destroy(buffer->gbm.bo);
+	}
 	free(buffer);
 }
