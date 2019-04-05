@@ -248,6 +248,7 @@ egl_create_context(struct output *output)
 
 	debug("couldn't create GLES3 context, falling back\n");
 
+	*attrib_version = 2;
 	/* As a last-ditch attempt, try an ES2 context. */
 	ret = eglCreateContext(device->egl_dpy, output->egl.cfg,
 			       EGL_NO_CONTEXT, attribs);
