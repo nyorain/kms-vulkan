@@ -299,7 +299,6 @@ int main(int argc, char *argv[])
 				fd_replace(&output->buffer_last->kms_fence_fd,
 					   output->commit_fence_fd);
 				output->commit_fence_fd = -1;
-
 			}
 		}
 
