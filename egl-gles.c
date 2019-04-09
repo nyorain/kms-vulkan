@@ -262,7 +262,6 @@ egl_create_context(struct output *output)
 static const char *vert_shader_text =
 	"precision highp float;\n"
 	"attribute vec2 in_pos;\n"
-	"uniform vec4 u_col;\n"
 	"void main() {\n"
 	"  gl_Position = vec4(in_pos, 0.0, 1.0);\n"
 	"}\n";
