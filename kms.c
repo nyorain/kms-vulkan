@@ -572,6 +572,7 @@ struct output *output_create(struct device *device,
 	output->primary_plane_id = plane->plane_id;
 	output->crtc_id = crtc->crtc_id;
 	output->connector_id = connector->connector_id;
+	output->commit_fence_fd = -1;
 	asprintf(&output->name, "%s-%d",
 		 (connector->connector_type < ARRAY_LENGTH(connector_type_names) ?
 		 	connector_type_names[connector->connector_type] :
