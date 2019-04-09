@@ -386,7 +386,14 @@ output_egl_setup(struct output *output)
 	glBindAttribLocation(output->egl.gl_prog, output->egl.pos_attr, "in_pos");
 
 	glLinkProgram(output->egl.gl_prog);
-        glGetProgramiv(output->egl.gl_prog, GL_LINK_STATUS, &status);
+	glGetProgramiv(output->egl.gl_prog, GL_LINK_STATUS, &status);
+	if (!status) {
+		char log[1000];
+		GLsizei len;
+		glGetProgramInfoLog(output->egl.gl_prog, 1000, &len, log);
+		error("Error: linking GLSL program: %*s\n", len, log);
+		goto err_program;
+	}
 	assert(status);
 
 	output->egl.col_uniform = glGetUniformLocation(output->egl.gl_prog, "u_col");
@@ -394,6 +401,8 @@ output_egl_setup(struct output *output)
 	glUseProgram(output->egl.gl_prog);
 
 	return true;
+err_program:
+	glDeleteProgram(output->egl.gl_prog);
 out_ctx:
 	eglDestroyContext(output->device->egl_dpy, output->egl.ctx);
 	return false;
