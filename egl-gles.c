@@ -343,19 +343,35 @@ output_egl_setup(struct output *output)
 			error("GL_OES_EGL_image not supported\n");
 			goto out_ctx;
 		}
+
+		if (output->explicit_fencing &&
+			!gl_extension_supported(exts, "GL_OES_EGL_sync")) {
+			error("GL_OES_EGL_sync not supported\n");
+			goto out_ctx;
+		}
 	} else {
 		const GLubyte *ext;
-		bool found = false;
+		bool found_image = false;
+		bool found_sync = false;
+		int num_exts = 0;
 
-		for (int i = 0; (ext = glGetStringi(GL_EXTENSIONS, i)); i++) {
-			if (strcmp((const char *) ext, "GL_OES_EGL_image")) {
-				found = true;
-				break;
-			}
+		glGetIntegerv(GL_NUM_EXTENSIONS, &num_exts);
+
+		for (int i = 0; i < num_exts; i++) {
+			ext = glGetStringi(GL_EXTENSIONS, i);
+			if (strcmp((const char *) ext, "GL_OES_EGL_image") == 0)
+				found_image = true;
+			else if (strcmp((const char *) ext, "GL_OES_EGL_sync") == 0)
+				found_sync = true;
 		}
 
-		if (!found) {
+		if (!found_image) {
 			error("GL_OES_EGL_image not supported\n");
+			goto out_ctx;
+		}
+
+		if (output->explicit_fencing && !found_sync) {
+			error("GL_OES_EGL_sync not supported\n");
 			goto out_ctx;
 		}
 	}
