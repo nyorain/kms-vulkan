@@ -645,6 +645,9 @@ void output_destroy(struct output *output)
 			buffer_destroy(output->buffers[i]);
 	}
 
+	if (output->device->egl_dpy)
+		output_egl_destroy(device, output);
+
 	if (output->mode_blob_id != 0)
 		drmModeDestroyPropertyBlob(device->kms_fd, output->mode_blob_id);
 

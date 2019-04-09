@@ -272,7 +272,7 @@ void buffer_destroy(struct buffer *buffer)
 		munmap(buffer->dumb.mem, buffer->dumb.size);
 		drmIoctl(device->kms_fd, DRM_IOCTL_MODE_DESTROY_DUMB, &destroy);
 	} else if (buffer->gbm.bo) {
-		gbm_bo_destroy(buffer->gbm.bo);
+		buffer_egl_destroy(device, buffer);
 	}
 	free(buffer);
 }

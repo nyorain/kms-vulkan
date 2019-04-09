@@ -298,6 +298,7 @@ create_shader(GLuint program, const char *source, GLenum shader_type)
         }
 
 	glAttachShader(program, shader);
+	glDeleteShader(shader);
 
         return EGL_TRUE;
 }
@@ -383,8 +384,15 @@ out_ctx:
 }
 
 void
-output_egl_destroy(struct output *output)
+output_egl_destroy(struct device* device, struct output *output)
 {
+	EGLBoolean ret;
+
+	ret = eglMakeCurrent(device->egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE,
+			     output->egl.ctx);
+	assert(ret);
+
+	glDeleteProgram(output->egl.gl_prog);
 	eglDestroyContext(output->device->egl_dpy, output->egl.ctx);
 }
 
@@ -606,6 +614,27 @@ err_bo:
 err:
 	free(ret);
 	return NULL;
+}
+
+void buffer_egl_destroy(struct device *device, struct buffer *buffer)
+{
+	static PFNEGLDESTROYIMAGEKHRPROC destroy_img = NULL;
+	EGLBoolean ret;
+
+	ret = eglMakeCurrent(device->egl_dpy, EGL_NO_SURFACE, EGL_NO_SURFACE,
+			     buffer->output->egl.ctx);
+	assert(ret);
+
+	if (!destroy_img) {
+		destroy_img = (PFNEGLDESTROYIMAGEKHRPROC)
+			eglGetProcAddress("eglDestroyImageKHR");
+	}
+	assert(destroy_img);
+
+	destroy_img(device->egl_dpy, buffer->gbm.img);
+	glDeleteFramebuffers(1, &buffer->gbm.fbo_id);
+	glDeleteTextures(1, &buffer->gbm.tex_id);
+	gbm_bo_destroy(buffer->gbm.bo);
 }
 
 static void fill_verts(GLfloat *verts, GLfloat *col, int frame_num, int loc)

@@ -451,13 +451,14 @@ void device_destroy(struct device *device);
 struct output *output_create(struct device *device,
 			     drmModeConnectorPtr connector);
 bool output_egl_setup(struct output *output);
-void output_egl_destroy(struct output *output);
+void output_egl_destroy(struct device *device, struct output *output);
 void output_destroy(struct output *output);
 
 /* Create and destroy framebuffers for a given output. */
 struct buffer *buffer_create(struct device *device, struct output *output);
 struct buffer *buffer_egl_create(struct device *device, struct output *output);
 void buffer_destroy(struct buffer *buffer);
+void buffer_egl_destroy(struct device *device, struct buffer *buffer);
 
 /* Fill a buffer for a given animation step. */
 void buffer_fill(struct buffer *buffer, int frame_num);
