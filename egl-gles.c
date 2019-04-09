@@ -857,6 +857,7 @@ buffer_egl_fill(struct buffer *buffer, int frame_num)
 					   EGL_SYNC_NATIVE_FENCE_ANDROID,
 					   attribs);
 			assert(sync);
+			buffer->kms_fence_fd = -1;
 			ret = wait_sync(device->egl_dpy, sync, 0);
 			assert(ret);
 			destroy_sync(device->egl_dpy, sync);
