@@ -37,8 +37,14 @@
 #include <drm.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
+
+#if defined(HAVE_GL_CORE)
+#include <GL/gl.h>
+#include <GL/glext.h>
+#else
 #include <GLES3/gl3.h>
 #include <GLES3/gl3ext.h>
+#endif
 
 bool
 gl_extension_supported(const char *haystack, const char *needle)
@@ -213,14 +219,29 @@ egl_create_context(struct output *output)
 	EGLContext ret;
 	EGLint nattribs = 2;
 	EGLint attribs[] = {
-		EGL_CONTEXT_CLIENT_VERSION, 3,
-		EGL_NONE,		    EGL_NONE,
-		EGL_NONE,		    EGL_NONE,
+		EGL_CONTEXT_MAJOR_VERSION, 3,
+		EGL_NONE,                  EGL_NONE,
+		EGL_NONE,                  EGL_NONE,
+		EGL_NONE,                  EGL_NONE,
+		EGL_NONE,                  EGL_NONE
 	};
 	EGLint *attrib_version = &attribs[1];
 
-	err = eglBindAPI(EGL_OPENGL_ES_API);
-	assert(err);
+	if (getenv("GL_CORE"))
+	{
+	    output->egl.gl_core = true;
+
+	    attribs[nattribs++] = EGL_CONTEXT_MINOR_VERSION;
+	    attribs[nattribs++] = 3;
+	    attribs[nattribs++] = EGL_CONTEXT_OPENGL_PROFILE_MASK;
+	    attribs[nattribs++] = EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT;
+
+	    err = eglBindAPI(EGL_OPENGL_API);
+	    assert(err);
+	} else {
+	    err = eglBindAPI(EGL_OPENGL_ES_API);
+	    assert(err);
+	}
 
 	/*
 	 * Try to give ourselves a high-priority context if we can; this may or
@@ -248,29 +269,47 @@ egl_create_context(struct output *output)
 
 	debug("couldn't create GLES3 context, falling back\n");
 
-	*attrib_version = 2;
-	/* As a last-ditch attempt, try an ES2 context. */
-	ret = eglCreateContext(device->egl_dpy, output->egl.cfg,
-			       EGL_NO_CONTEXT, attribs);
-	if (ret)
-		return ret;
+	if (!output->egl.gl_core)
+	{
+	    *attrib_version = 2;
+	    /* As a last-ditch attempt, try an ES2 context. */
+	    ret = eglCreateContext(device->egl_dpy, output->egl.cfg,
+				   EGL_NO_CONTEXT, attribs);
+	    if (ret)
+		    return ret;
+	}
 
 	error("couldn't create any EGL context!\n");
 	return EGL_NO_CONTEXT;
 }
 
-static const char *vert_shader_text =
+static const char *vert_shader_text_gles =
 	"precision highp float;\n"
 	"attribute vec2 in_pos;\n"
 	"void main() {\n"
 	"  gl_Position = vec4(in_pos, 0.0, 1.0);\n"
 	"}\n";
 
-static const char *frag_shader_text =
+static const char *frag_shader_text_gles =
 	"precision highp float;\n"
 	"uniform vec4 u_col;\n"
 	"void main() {\n"
 	"  gl_FragColor = u_col;\n"
+	"}\n";
+
+static const char *vert_shader_text_glcore =
+	"#version 330 core\n"
+	"in vec2 in_pos;\n"
+	"void main() {\n"
+	"  gl_Position = vec4(in_pos, 0.0, 1.0);\n"
+	"}\n";
+
+static const char *frag_shader_text_glcore =
+	"#version 330 core\n"
+	"uniform vec4 u_col;\n"
+	"out vec4 out_color;\n"
+	"void main() {\n"
+	"  out_color = u_col;\n"
 	"}\n";
 
 static GLuint
@@ -336,7 +375,13 @@ output_egl_setup(struct output *output)
 			     output->egl.ctx);
 	assert(ret);
 
-	exts = (const char *) glGetString(GL_EXTENSIONS);
+	exts = NULL;
+
+	/* glGetString on GL Core with GL_EXTENSIONS is an error,
+	 * so only do that if not using GL Core */
+	if (!output->egl.gl_core)
+		exts = (const char *) glGetString(GL_EXTENSIONS);
+
 	if (exts) {
 		if (!gl_extension_supported(exts, "GL_OES_EGL_image")) {
 			error("GL_OES_EGL_image not supported\n");
@@ -375,10 +420,22 @@ output_egl_setup(struct output *output)
 		}
 	}
 
+	printf("using GL setup: \n"
+		"   renderer '%s'\n"
+		"   vendor '%s'\n"
+		"   GL version '%s'\n"
+		"   GLSL version '%s'\n",
+		glGetString(GL_RENDERER), glGetString(GL_VENDOR),
+		glGetString(GL_VERSION), glGetString(GL_SHADING_LANGUAGE_VERSION));
+
 	output->egl.gl_prog = glCreateProgram();
-	ret = create_shader(output->egl.gl_prog, vert_shader_text, GL_VERTEX_SHADER);
+	ret = create_shader(output->egl.gl_prog,
+		output->egl.gl_core ? vert_shader_text_glcore : vert_shader_text_gles,
+		GL_VERTEX_SHADER);
 	assert(ret);
-	ret = create_shader(output->egl.gl_prog, frag_shader_text, GL_FRAGMENT_SHADER);
+	ret = create_shader(output->egl.gl_prog,
+		output->egl.gl_core ? frag_shader_text_glcore : frag_shader_text_gles,
+		GL_FRAGMENT_SHADER);
 	assert(ret);
 
 	output->egl.pos_attr = 0;

@@ -1,0 +1,7 @@
+option(
+  'glcore',
+  type : 'boolean',
+  value : false,
+  description : 'Build support for OpenGL Core'
+)
+

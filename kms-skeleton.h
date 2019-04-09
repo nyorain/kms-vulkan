@@ -387,6 +387,8 @@ struct output {
 		GLuint col_uniform;
 		GLuint vbo;
 		GLuint vao;
+		/* Whether to use big OpenGL Core Profile context or to use GLES */
+		bool gl_core;
 	} egl;
 };
 

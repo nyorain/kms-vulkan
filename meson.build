@@ -24,8 +24,15 @@ deps = [
   dependency('libdrm'),
   dependency('gbm'),
   dependency('egl'),
-  dependency('glesv2'),
 ]
+
+if get_option('glcore')
+  deps += dependency('gl')
+  defines += '-DGL_GLEXT_PROTOTYPES=1'
+  defines += '-DHAVE_GL_CORE=1'
+else
+  deps += dependency('glesv2')
+endif
 
 executable('kms-skeleton',
   'main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c',
