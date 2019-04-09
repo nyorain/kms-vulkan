@@ -68,7 +68,18 @@ static struct buffer *find_free_buffer(struct output *output)
 }
 
 /*
- * Informs us that an atomic commit has completed for the given CRTC.
+ * Informs us that an atomic commit has completed for the given CRTC. This will
+ * be called one for each output (identified by the crtc_id) for each commit.
+ * We will be given the user_data parameter we passed to drmModeAtomicCommit
+ * (which for us is just the device struct), as well as the frame sequence
+ * counter as well as the actual time that our commit became active in hardware.
+ *
+ * This time is usually close to the start of the vblank period of the previous
+ * frame, but depends on the driver.
+ *
+ * If the driver declares DRM_CAP_TIMESTAMP_MONOTONIC in its capabilities,
+ * these times will be given as CLOCK_MONOTONIC values. If not (e.g. VMware),
+ * all bets are off.
  */
 static void atomic_event_handler(int fd,
 				 unsigned int sequence,
@@ -85,19 +96,30 @@ static void atomic_event_handler(int fd,
 	};
 	int64_t delta_nsec;
 
+	/* Find the output this event is delivered for. */
 	for (int i = 0; i < device->num_outputs; i++) {
 		if (device->outputs[i]->crtc_id == crtc_id) {
 			output = device->outputs[i];
 			break;
 		}
 	}
-
 	if (!output) {
 		debug("[CRTC:%u] received atomic completion for unknown CRTC",
 		      crtc_id);
 		return;
 	}
 
+	/*
+	 * Compare the actual completion timestamp to what we had predicted it
+	 * would be when we submitted it.
+	 *
+	 * This example simply screams into the logs if we hit a different
+	 * time from what we had predicted. However, there are a number of
+	 * things you could do to better deal with this: for example, if your
+	 * frame is always late, you need to either start drawing earlier, or
+	 * if that is not possible, halve your frame rate so you can draw
+	 * steadily and predictably, if more slowly.
+	 */
 	delta_nsec = timespec_sub_to_nsec(&completion, &output->next_frame);
 	if (timespec_to_nsec(&output->last_frame) != 0 &&
 	    llabs((long long) delta_nsec) > FRAME_TIMING_TOLERANCE) {
@@ -151,6 +173,7 @@ static void atomic_event_handler(int fd,
 
 	if (output->buffer_last) {
 		assert(output->buffer_last->in_use);
+		debug("\treleasing buffer with FB ID %" PRIu32 "\n", output->buffer_last->fb_id);
 		output->buffer_last->in_use = false;
 		output->buffer_last = NULL;
 	}
@@ -199,11 +222,18 @@ static void repaint_one_output(struct output *output, drmModeAtomicReqPtr req,
 	ret = clock_gettime(CLOCK_MONOTONIC, &now);
 	assert(ret == 0);
 
+	/*
+	 * Find a free buffer, predict the time our next frame will be
+	 * displayed, use this to derive a target position for our animation
+	 * (such that it remains as linear as possible over time, even at
+	 * the cost of dropping frames), render the content for that position.
+	 */
 	buffer = find_free_buffer(output);
 	assert(buffer);
 	advance_frame(output, &now);
-
 	buffer_fill(buffer, output->frame_num);
+
+	/* Add the output's new state to the atomic modesetting request. */
 	output_add_atomic_req(output, req, buffer);
 	buffer->in_use = true;
 	output->buffer_pending = buffer;
@@ -248,14 +278,22 @@ int main(int argc, char *argv[])
 	sigemptyset(&sa.sa_mask);
 	sigaction(SIGINT, &sa, NULL);
 
-	/* Find a suitable KMS device, and set up our VT. */
+	/*
+	 * Find a suitable KMS device, and set up our VT.
+	 * This will create outputs for every currently-enabled connector.
+	 */
 	device = device_create();
 	if (!device) {
 		fprintf(stderr, "no usable KMS devices!\n");
 		return 1;
 	}
 
-	/* Allocate framebuffers to display on all our outputs. */
+	/*
+	 * Allocate framebuffers to display on all our outputs.
+	 *
+	 * It is possible to use an EGLSurface here, but we explicitly allocate
+	 * buffers ourselves so we can manage the queue depth.
+	 */
 	for (int i = 0; i < device->num_outputs; i++) {
 		struct output *output = device->outputs[i];
 		int j;
@@ -280,6 +318,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	/* Our main rendering loop, which we spin forever. */
 	while (!shall_exit) {
 		drmModeAtomicReq *req;
 		bool needs_modeset = false;
@@ -294,23 +333,66 @@ int main(int argc, char *argv[])
 			.events = POLLIN,
 		};
 
+		/*
+		 * Allocate an atomic-modesetting request structure for any
+		 * work we will do in this loop iteration.
+		 *
+		 * Atomic modesetting allows us to group together KMS requests
+		 * for multiple outputs, so this request may contain more than
+		 * one output's repaint data.
+		 */
 		req = drmModeAtomicAlloc();
 		assert(req);
 
 		/*
 		 * See which of our outputs needs repainting, and repaint them
 		 * if any.
+		 *
+		 * On our first run through the loop, all our outputs will
+		 * need repainting, so the request will contain the state for
+		 * all the outputs, submitted together.
+		 *
+		 * This is good since it gives the driver a complete overview
+		 * of any hardware changes it would need to perform to reach
+		 * the target state.
 		 */
 		for (int i = 0; i < device->num_outputs; i++) {
 			struct output *output = device->outputs[i];
 			if (output->needs_repaint) {
+				/*
+				 * Add this output's new state to the atomic
+				 * request.
+				 */
 				repaint_one_output(output, req, &needs_modeset);
 				output_count++;
 			}
 		}
 
+		/*
+		 * Committing the atomic request to KMS makes the configuration
+		 * current. As we request non-blocking mode, this function will
+		 * return immediately, and send us events through the DRM FD
+		 * when the request has actually completed. Even if we group
+		 * updates for multiple outputs into a single request, the
+		 * kernel will send one completion event for each output.
+		 *
+		 * Hence, after the first repaint, each output effectively
+		 * runs its own repaint loop. This allows us to work with
+		 * outputs running at different frequencies, or running out of
+		 * phase from each other, without dropping our frame rate to
+		 * the lowest common denominator.
+		 *
+		 * It does mean that we need to allocate paint the buffers for
+		 * each output individually, rather than having a single buffer
+		 * with the content for every output.
+		 */
 		if (output_count)
 			ret = atomic_commit(device, req, needs_modeset);
+		drmModeAtomicFree(req);
+		if (ret != 0) {
+			fprintf(stderr, "atomic commit failed: %d\n", ret);
+			break;
+		}
 
 		/*
 		 * The out-fence FD from KMS signals when the commit we've just
@@ -328,12 +410,13 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		drmModeAtomicFree(req);
-		if (ret != 0) {
-			fprintf(stderr, "atomic commit failed: %d\n", ret);
-			break;
-		}
-
+		/*
+		 * Now we have (maybe) repainted some outputs, we go to sleep
+		 * waiting for completion events from KMS. As each output
+		 * completes, we will receive one event per output (making
+		 * the DRM FD be readable and waking us from poll), which we
+		 * then dispatch through drmHandleEvent into our callback.
+		 */
 		ret = poll(&poll_fd, 1, -1);
 		if (ret == -1) {
 			fprintf(stderr, "error polling KMS FD: %d\n", ret);

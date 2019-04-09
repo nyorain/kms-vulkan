@@ -189,8 +189,10 @@ static struct device *device_open(const char *filename)
 
 	assert(ret);
 
-	/* Open the device and ensure we have support for universal planes and
-	 * atomic modesetting. */
+	/*
+	 * Open the device and ensure we have support for universal planes and
+	 * atomic modesetting.
+	 */
 	ret->kms_fd = open(filename, O_RDWR | O_CLOEXEC, 0);
 	if (ret->kms_fd < 0) {
 		fprintf(stderr, "warning: couldn't open %s: %m\n", filename);
@@ -202,7 +204,8 @@ static struct device *device_open(const char *filename)
 	 * have happened for us thanks to being root and the first client.
 	 * There can only be one master at a time, so this will fail if
 	 * (e.g.) trying to run this test whilst a graphical session is
-	 * already active on the current VT. */
+	 * already active on the current VT.
+	 */
 	if (drmGetMagic(ret->kms_fd, &magic) != 0 ||
 	    drmAuthMagic(ret->kms_fd, magic) != 0) {
 		fprintf(stderr, "KMS device %s is not master\n", filename);
@@ -221,8 +224,10 @@ static struct device *device_open(const char *filename)
 	debug("device %s framebuffer modifiers\n",
 	      (ret->fb_modifiers) ? "supports" : "does not support");
 
-	/* The two 'resource' properties describe the KMS capabilities for
-	 * this device. */
+	/*
+	 * The two 'resource' properties describe the KMS capabilities for
+	 * this device.
+	 */
 	ret->res = drmModeGetResources(ret->kms_fd);
 	if (!ret->res) {
 		fprintf(stderr, "couldn't get card resources for %s\n",
@@ -254,8 +259,12 @@ static struct device *device_open(const char *filename)
 			      sizeof(*ret->outputs));
 	assert(ret->outputs);
 
-	/* Go through our connectors one by one and try to find a usable
-	 * output chain. */
+	/*
+	 * Go through our connectors one by one and try to find a usable
+	 * output chain. The comments in output_create() describe how we
+	 * determine how to set up the output, and why we work backwards
+	 * from a connector.
+	 */
 	for (int i = 0; i < ret->res->count_connectors; i++) {
 		drmModeConnectorPtr connector =
 			drmModeGetConnector(ret->kms_fd,

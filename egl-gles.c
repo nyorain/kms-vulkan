@@ -283,6 +283,7 @@ egl_create_context(struct output *output)
 	return EGL_NO_CONTEXT;
 }
 
+/* The following is boring boilerplate GL to draw four quads. */
 static const char *vert_shader_text_gles =
 	"precision highp float;\n"
 	"attribute vec2 in_pos;\n"
@@ -495,6 +496,12 @@ output_egl_destroy(struct device* device, struct output *output)
 	eglDestroyContext(output->device->egl_dpy, output->egl.ctx);
 }
 
+/*
+ * Allocates a buffer and makes it usable for rendering with EGL/GL. We achieve
+ * this by allocating each individual buffer with GBM, importing it into EGL
+ * as an EGLImage, binding the EGLImage to a texture unit, then finally creating
+ * a FBO from that texture unit so we can render into it.
+ */
 struct buffer *buffer_egl_create(struct device *device, struct output *output)
 {
 	struct buffer *ret = calloc(1, sizeof(*ret));
