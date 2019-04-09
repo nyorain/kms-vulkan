@@ -736,7 +736,7 @@ void output_add_atomic_req(struct output *output, drmModeAtomicReqPtr req,
 	 * as we just use a full-size uncropped image, we don't need this.
 	 */
 	ret |= plane_add_prop(req, output, WDRM_PLANE_FB_ID, buffer->fb_id);
-	if (output->explicit_fencing && buffer->render_fence_fd) {
+	if (output->explicit_fencing && buffer->render_fence_fd >= 0) {
 		ret |= plane_add_prop(req, output, WDRM_PLANE_IN_FENCE_FD,
 				      buffer->render_fence_fd);
 	}
