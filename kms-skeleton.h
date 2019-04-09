@@ -26,6 +26,7 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <unistd.h>
 #include <time.h>
 
 /*
