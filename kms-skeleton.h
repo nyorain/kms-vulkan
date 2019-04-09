@@ -542,3 +542,31 @@ linux_sync_file_is_valid(int fd)
 
         return file_info.num_fences > 0;
 }
+
+static uint64_t
+linux_sync_file_get_fence_time(int fd)
+{
+	struct sync_file_info file_info;
+	struct sync_fence_info fence_info;
+	int ret;
+
+	memset(&file_info, 0, sizeof(file_info));
+	memset(&fence_info, 0, sizeof(fence_info));
+	file_info.sync_fence_info = (uint64_t) (uintptr_t) &fence_info;
+	file_info.num_fences = 1;
+
+	/*
+	 * One of the ways this ioctl can fail is if there is insufficient
+	 * storage for the number of fences; a sync_file FD can hold multiple
+	 * individual fences which are all merged together.
+	 *
+	 * This is fine for us since we only use single fences, but if you use
+	 * merged fences, you can query the number of fences by setting
+	 * num_fences == 0 and calling this ioctl, which will return the number
+	 * of fences in the num_fences parameter.
+	 */
+	ret = ioctl(fd, SYNC_IOC_FILE_INFO, &file_info);
+	assert(ret == 0);
+
+	return fence_info.timestamp_ns;
+}

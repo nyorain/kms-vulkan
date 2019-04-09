@@ -124,6 +124,31 @@ static void atomic_event_handler(int fd,
 	 */
 	assert(output->buffer_pending);
 	assert(output->buffer_pending->in_use);
+
+	if (output->explicit_fencing) {
+		/*
+		 * Print the time that the KMS fence FD signaled, i.e. when the
+		 * last commit completed. It should be the same time as passed
+		 * to this event handler in the function arguments.
+		 */
+		if (output->buffer_last &&
+		    output->buffer_last->kms_fence_fd >= 0) {
+			assert(linux_sync_file_is_valid(output->buffer_last->kms_fence_fd));
+			debug("\tKMS fence time: %" PRIu64 "ns\n",
+			      linux_sync_file_get_fence_time(output->buffer_last->kms_fence_fd));
+		}
+
+		/*
+		 * Print the time that the render fence FD signaled, i.e. when
+		 * we finished writing to the buffer that we have now started
+		 * displaying. It should be strictly before the KMS fence FD
+		 * time.
+		 */
+		assert(linux_sync_file_is_valid(output->buffer_pending->render_fence_fd));
+		debug("\trender fence time: %" PRIu64 "ns\n",
+		      linux_sync_file_get_fence_time(output->buffer_pending->render_fence_fd));
+	}
+
 	if (output->buffer_last) {
 		assert(output->buffer_last->in_use);
 		output->buffer_last->in_use = false;
