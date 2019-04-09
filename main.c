@@ -204,10 +204,24 @@ static void repaint_one_output(struct output *output, drmModeAtomicReqPtr req,
 	}
 }
 
+static bool shall_exit = false;
+
+static void sighandler(int signo)
+{
+	if (signo == SIGINT)
+		shall_exit = true;
+	return;
+}
+
 int main(int argc, char *argv[])
 {
 	struct device *device;
 	int ret = 0;
+
+	struct sigaction sa;
+	sa.sa_handler = sighandler;
+	sigemptyset(&sa.sa_mask);
+	sigaction(SIGINT, &sa, NULL);
 
 	/* Find a suitable KMS device, and set up our VT. */
 	device = device_create();
@@ -241,7 +255,7 @@ int main(int argc, char *argv[])
 		}
 	}
 
-	while (true) {
+	while (!shall_exit) {
 		drmModeAtomicReq *req;
 		bool needs_modeset = false;
 		int output_count = 0;
@@ -310,5 +324,6 @@ int main(int argc, char *argv[])
 
 out:
 	device_destroy(device);
+	fprintf(stdout, "good-bye\n");
 	return ret;
 }
