@@ -296,6 +296,7 @@ int main(int argc, char *argv[])
 		for (int i = 0; i < device->num_outputs; i++) {
 			struct output *output = device->outputs[i];
 			if (output->explicit_fencing && output->buffer_last) {
+				assert(linux_sync_file_is_valid(output->commit_fence_fd));
 				fd_replace(&output->buffer_last->kms_fence_fd,
 					   output->commit_fence_fd);
 				output->commit_fence_fd = -1;

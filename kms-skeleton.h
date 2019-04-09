@@ -28,6 +28,10 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <time.h>
+#include <sys/ioctl.h>
+
+/* The dma-fence explicit fencing API was previously called sync-file. */
+#include <linux/sync_file.h>
 
 /*
  * Headers from the kernel's DRM uABI, allowing us to use ioctls directly.
@@ -520,4 +524,21 @@ fd_dup_into(int *target, int source)
 	int duped = fcntl(source, F_DUPFD_CLOEXEC, 0);
 	assert(duped >= 0);
 	fd_replace(target, duped);
+}
+
+/*
+ * These two helpers operate on sync_file FDs, which contain dma-fences used
+ * for explicit fencing. We get these fences from EGLSync and from KMS.
+ */
+static bool
+linux_sync_file_is_valid(int fd)
+{
+        struct sync_file_info file_info;
+
+	memset(&file_info, 0, sizeof(file_info));
+
+        if (ioctl(fd, SYNC_IOC_FILE_INFO, &file_info) < 0)
+                return false;
+
+        return file_info.num_fences > 0;
 }

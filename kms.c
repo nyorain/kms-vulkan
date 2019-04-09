@@ -741,6 +741,7 @@ void output_add_atomic_req(struct output *output, drmModeAtomicReqPtr req,
 	 */
 	ret |= plane_add_prop(req, output, WDRM_PLANE_FB_ID, buffer->fb_id);
 	if (output->explicit_fencing && buffer->render_fence_fd >= 0) {
+		assert(linux_sync_file_is_valid(buffer->render_fence_fd));
 		ret |= plane_add_prop(req, output, WDRM_PLANE_IN_FENCE_FD,
 				      buffer->render_fence_fd);
 	}

@@ -853,6 +853,7 @@ buffer_egl_fill(struct buffer *buffer, int frame_num)
 				EGL_NONE,
 			};
 
+			assert(linux_sync_file_is_valid(buffer->kms_fence_fd));
 			sync = create_sync(device->egl_dpy,
 					   EGL_SYNC_NATIVE_FENCE_ANDROID,
 					   attribs);
@@ -919,6 +920,7 @@ buffer_egl_fill(struct buffer *buffer, int frame_num)
 	if (output->explicit_fencing) {
 		int fd = dup_fence_fd(device->egl_dpy, sync);
 		assert(fd >= 0);
+		assert(linux_sync_file_is_valid(fd));
 		fd_replace(&buffer->render_fence_fd, fd);
 		destroy_sync(device->egl_dpy, sync);
 	}
