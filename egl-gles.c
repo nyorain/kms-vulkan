@@ -400,6 +400,22 @@ output_egl_setup(struct output *output)
 
 	glUseProgram(output->egl.gl_prog);
 
+	glGenBuffers(1, &output->egl.vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, output->egl.vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * 8, NULL, GL_DYNAMIC_DRAW);
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+	glGenVertexArrays(1, &output->egl.vao);
+	glBindVertexArray(output->egl.vao);
+
+	glBindBuffer(GL_ARRAY_BUFFER, output->egl.vbo);
+
+	glVertexAttribPointer(output->egl.pos_attr, 2, GL_FLOAT, GL_FALSE, 0, (char*)(NULL));
+	glEnableVertexAttribArray(0);
+
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindVertexArray(0);
+
 	return true;
 err_program:
 	glDeleteProgram(output->egl.gl_prog);
@@ -417,6 +433,8 @@ output_egl_destroy(struct device* device, struct output *output)
 			     output->egl.ctx);
 	assert(ret);
 
+	glDeleteVertexArrays(1, &output->egl.vao);
+	glDeleteBuffers(1, &output->egl.vbo);
 	glDeleteProgram(output->egl.gl_prog);
 	eglDestroyContext(output->device->egl_dpy, output->egl.ctx);
 }
@@ -798,11 +816,15 @@ buffer_egl_fill(struct buffer *buffer, int frame_num)
 		GLfloat verts[8];
 		GLuint err = glGetError();
 		fill_verts(verts, col, frame_num, i);
-		glVertexAttribPointer(output->egl.pos_attr, 2, GL_FLOAT, GL_FALSE, 0, verts);
+		glBindBuffer(GL_ARRAY_BUFFER, output->egl.vbo);
+		/* glBufferSubData is most supported across GLES2 / Core profile,
+		 * Core profile / GLES3 might have better ways */
+		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(GLfloat) * 8, verts);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+		glBindVertexArray(output->egl.vao);
 		glUniform4f(output->egl.col_uniform, col[0], col[1], col[2], col[3]);
-		glEnableVertexAttribArray(output->egl.pos_attr);
 		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-		glDisableVertexAttribArray(output->egl.pos_attr);
+		glBindVertexArray(0);
 		err = glGetError();
 		if (err != GL_NO_ERROR)
 			debug("GL error state 0x%x\n", err);

@@ -385,6 +385,8 @@ struct output {
 		GLuint gl_prog;
 		GLuint pos_attr;
 		GLuint col_uniform;
+		GLuint vbo;
+		GLuint vao;
 	} egl;
 };
 
