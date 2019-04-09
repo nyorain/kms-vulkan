@@ -818,6 +818,4 @@ buffer_egl_fill(struct buffer *buffer, int frame_num)
 		fd_replace(&buffer->render_fence_fd, fd);
 		destroy_sync(device->egl_dpy, sync);
 	}
-
-	glFinish();
 }
