@@ -17,6 +17,7 @@
 
 /*
  * Copyright © 2018-2019 Collabora, Ltd.
+ * Copyright © 2018-2019 DAQRI, LLC and its affiliates
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the "Software"),
