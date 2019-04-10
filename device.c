@@ -61,7 +61,7 @@
 #include <linux/major.h>
 #include <linux/vt.h>
 
-#include "kms-skeleton.h"
+#include "kms-quads.h"
 
 /*
  * Set up the VT/TTY so it runs in graphics mode and lets us handle our own

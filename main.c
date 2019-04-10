@@ -1,5 +1,5 @@
 /*
- * kms-skeleton is an example of how to use the KMS API directly and set up
+ * kms-quads is an example of how to use the KMS API directly and set up
  * a basic timed render loop.
  *
  * It is to be a relatively straightforward learning/explanation utility,
@@ -53,7 +53,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "kms-skeleton.h"
+#include "kms-quads.h"
 
 /* Allow the driver to drift half a millisecond every frame. */
 #define FRAME_TIMING_TOLERANCE (NSEC_PER_SEC / 2000)

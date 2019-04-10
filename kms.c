@@ -56,7 +56,7 @@
 #include <linux/major.h>
 #include <linux/vt.h>
 
-#include "kms-skeleton.h"
+#include "kms-quads.h"
 
 /*
  * All the properties we support for the different object types, as well as

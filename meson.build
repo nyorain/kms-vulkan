@@ -1,4 +1,4 @@
-project('kms-skeleton',
+project('kms-quads',
   'c',
   default_options: [
     'warning_level=2',
@@ -34,7 +34,7 @@ else
   deps += dependency('glesv2')
 endif
 
-executable('kms-skeleton',
+executable('kms-quads',
   'main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c',
   dependencies: deps,
   c_args: defines,

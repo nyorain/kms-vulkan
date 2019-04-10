@@ -68,7 +68,7 @@
 #include <string.h>
 #include <unistd.h>
 
-#include "kms-skeleton.h"
+#include "kms-quads.h"
 
 #define EDID_DESCRIPTOR_ALPHANUMERIC_DATA_STRING	0xfe
 #define EDID_DESCRIPTOR_DISPLAY_PRODUCT_NAME		0xfc

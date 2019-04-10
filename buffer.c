@@ -36,7 +36,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 
-#include "kms-skeleton.h"
+#include "kms-quads.h"
 
 /*
  * Using the CPU mapping, fill the buffer with a simple pixel-by-pixel

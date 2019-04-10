@@ -33,7 +33,7 @@
 #include <sys/fcntl.h>
 #include <sys/ioctl.h>
 
-#include "kms-skeleton.h"
+#include "kms-quads.h"
 
 #include <drm.h>
 #include <EGL/egl.h>
