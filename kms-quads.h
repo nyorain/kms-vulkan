@@ -54,8 +54,14 @@
 #include <gbm.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
-#include <GLES2/gl2.h>
-#include <GLES2/gl2ext.h>
+
+#if defined(HAVE_GL_CORE)
+#include <GL/gl.h>
+#include <GL/glext.h>
+#else
+#include <GLES3/gl3.h>
+#include <GLES3/gl3ext.h>
+#endif
 
 /* Utility header from Weston to more easily handle time values. */
 #include "timespec-util.h"

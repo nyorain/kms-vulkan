@@ -45,6 +45,11 @@
 #else
 #include <GLES3/gl3.h>
 #include <GLES3/gl3ext.h>
+/*
+ * GLES2 exts is needed for prototypes of GL_OES_EGL_image
+ * (i.e. glEGLImageTargetTexture2DOES etc.)
+ */
+#include <GLES2/gl2ext.h>
 #endif
 
 bool
