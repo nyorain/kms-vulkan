@@ -576,7 +576,7 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 		if (h.u32 == 0 || h.s32 == -1) {
 			error("failed to get handle for BO plane %d (modifier 0x%" PRIx64 ")\n",
 			      i, ret->modifier);
-			goto err;
+			goto err_bo;
 		}
 		ret->gem_handles[i] = h.u32;
 
@@ -584,14 +584,14 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 		if (dma_buf_fds[i] == -1) {
 			error("failed to get file descriptor for BO plane %d (modifier 0x%" PRIx64 ")\n",
 			      i, ret->modifier);
-			goto err;
+			goto err_bo;
 		}
 
 		ret->pitches[i] = gbm_bo_get_stride_for_plane(ret->gbm.bo, i);
 		if (ret->pitches[i] == 0) {
 			error("failed to get stride for BO plane %d (modifier 0x%" PRIx64 ")\n",
 			      i, ret->modifier);
-			goto err;
+			goto err_bo;
 		}
 
 		ret->offsets[i] = gbm_bo_get_offset(ret->gbm.bo, i);
@@ -740,11 +740,11 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 
 err_bo:
 	gbm_bo_destroy(ret->gbm.bo);
-err:
 	for (size_t i = 0; i < ARRAY_LENGTH(dma_buf_fds); i++) {
 		if (dma_buf_fds[i] != -1)
 			close(dma_buf_fds[i]);
 	}
+err:
 	free(ret);
 	return NULL;
 }
