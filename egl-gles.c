@@ -517,6 +517,7 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 	EGLint nattribs = 0;
 	EGLBoolean err;
 	int num_planes;
+	int dma_buf_fds[4] = { -1, -1, -1, -1 };
 
 	assert(ret);
 
@@ -579,6 +580,13 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 		}
 		ret->gem_handles[i] = h.u32;
 
+		dma_buf_fds[i] = handle_to_fd(device, ret->gem_handles[i]);
+		if (dma_buf_fds[i] == -1) {
+			error("failed to get file descriptor for BO plane %d (modifier 0x%" PRIx64 ")\n",
+			      i, ret->modifier);
+			goto err;
+		}
+
 		ret->pitches[i] = gbm_bo_get_stride_for_plane(ret->gbm.bo, i);
 		if (ret->pitches[i] == 0) {
 			error("failed to get stride for BO plane %d (modifier 0x%" PRIx64 ")\n",
@@ -614,7 +622,7 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 	debug("importing %u x %u EGLImage with %d planes\n", ret->width, ret->height, num_planes);
 
 	attribs[nattribs++] = EGL_DMA_BUF_PLANE0_FD_EXT;
-	attribs[nattribs++] = handle_to_fd(device, ret->gem_handles[0]);
+	attribs[nattribs++] = dma_buf_fds[0];
 	debug("\tplane 0 FD %d\n", attribs[nattribs - 1]);
 	attribs[nattribs++] = EGL_DMA_BUF_PLANE0_OFFSET_EXT;
 	attribs[nattribs++] = ret->offsets[0];
@@ -633,7 +641,7 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 
 	if (num_planes > 1) {
 		attribs[nattribs++] = EGL_DMA_BUF_PLANE1_FD_EXT;
-		attribs[nattribs++] = handle_to_fd(device, ret->gem_handles[1]);
+		attribs[nattribs++] = dma_buf_fds[1];
 		attribs[nattribs++] = EGL_DMA_BUF_PLANE1_OFFSET_EXT;
 		attribs[nattribs++] = ret->offsets[1];
 		attribs[nattribs++] = EGL_DMA_BUF_PLANE1_PITCH_EXT;
@@ -648,7 +656,7 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 
 	if (num_planes > 2) {
 		attribs[nattribs++] = EGL_DMA_BUF_PLANE2_FD_EXT;
-		attribs[nattribs++] = handle_to_fd(device, ret->gem_handles[2]);
+		attribs[nattribs++] = dma_buf_fds[2];
 		attribs[nattribs++] = EGL_DMA_BUF_PLANE2_OFFSET_EXT;
 		attribs[nattribs++] = ret->offsets[2];
 		attribs[nattribs++] = EGL_DMA_BUF_PLANE2_PITCH_EXT;
@@ -663,7 +671,7 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 
 	if (num_planes > 3) {
 		attribs[nattribs++] = EGL_DMA_BUF_PLANE3_FD_EXT;
-		attribs[nattribs++] = handle_to_fd(device, ret->gem_handles[3]);
+		attribs[nattribs++] = dma_buf_fds[3];
 		attribs[nattribs++] = EGL_DMA_BUF_PLANE3_OFFSET_EXT;
 		attribs[nattribs++] = ret->offsets[3];
 		attribs[nattribs++] = EGL_DMA_BUF_PLANE3_PITCH_EXT;
@@ -692,6 +700,15 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 		error("failed to create EGLImage for %u x %u BO (modifier 0x%" PRIx64 ")\n",
 		      ret->width, ret->height, ret->modifier);
 		goto err_bo;
+	}
+
+	/*
+	 * EGL does not take ownership of the dma-buf file descriptors and will
+	 * clone them internally. We don't need the file descriptors after
+	 * they've been imported, so we can just close them now.
+	 */
+	for (int i = 0; i < num_planes; i++) {
+		close(dma_buf_fds[i]);
 	}
 
 	/*
@@ -724,6 +741,10 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 err_bo:
 	gbm_bo_destroy(ret->gbm.bo);
 err:
+	for (size_t i = 0; i < ARRAY_LENGTH(dma_buf_fds); i++) {
+		if (dma_buf_fds[i] != -1)
+			close(dma_buf_fds[i]);
+	}
 	free(ret);
 	return NULL;
 }
