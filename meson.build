@@ -1,21 +1,20 @@
 project('kms-quads',
   'c',
   default_options: [
-    'warning_level=2',
-    'c_std=gnu99',
+    'warning_level=3',
+    'c_std=c99',
   ]
 )
 
 cc = meson.get_compiler('c')
 add_project_arguments(
   cc.get_supported_arguments([
-    '-D_GNU_SOURCE',
     '-Wno-unused',
   ]),
   language: 'c'
 )
 
-defines = [ '-D_GNU_SOURCE' ]
+defines = ['-D_POSIX_C_SOURCE=200809L']
 if get_option('buildtype') == 'debug' or get_option('buildtype') == 'debugoptimized'
   defines += '-DDEBUG'
 endif

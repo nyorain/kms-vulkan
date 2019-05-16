@@ -460,7 +460,7 @@ static uint32_t mode_blob_create(struct device *device, drmModeModeInfo *mode)
 
 	err = drmModeCreatePropertyBlob(device->kms_fd, mode, sizeof(*mode), &ret);
 	if (err < 0) {
-		fprintf(stderr, "couldn't create MODE_ID blob: %m\n");
+		fprintf(stderr, "couldn't create MODE_ID blob: %s\n", strerror(errno));
 		return 0;
 	}
 
@@ -574,7 +574,7 @@ struct output *output_create(struct device *device,
 	output->crtc_id = crtc->crtc_id;
 	output->connector_id = connector->connector_id;
 	output->commit_fence_fd = -1;
-	asprintf(&output->name, "%s-%d",
+	snprintf(output->name, sizeof(output->name), "%s-%d",
 		 (connector->connector_type < ARRAY_LENGTH(connector_type_names) ?
 		 	connector_type_names[connector->connector_type] :
 			"UNKNOWN"),

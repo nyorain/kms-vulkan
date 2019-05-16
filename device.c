@@ -74,7 +74,7 @@ static int vt_setup(struct device *device)
 	const char *tty_num_env = getenv("TTYNO");
 	int tty_num = 0;
 	int cur_vt;
-	char *tty_dev;
+	char tty_dev[32];
 
 	/* If $TTYNO is set in the environment, then use that first. */
 	if (tty_num_env) {
@@ -85,13 +85,12 @@ static int vt_setup(struct device *device)
 			fprintf(stderr, "invalid $TTYNO environment variable\n");
 			return -1;
 		}
-		asprintf(&tty_dev, "/dev/tty%d", tty_num);
+		snprintf(tty_dev, sizeof(tty_dev), "/dev/tty%d", tty_num);
 	} else if (ttyname(STDIN_FILENO)) {
 		/* Otherwise, if we're running from a VT ourselves, just reuse
 		 * that. */
-		tty_dev = strdup(ttyname(STDIN_FILENO));
-	}
-	else {
+		ttyname_r(STDIN_FILENO, tty_dev, sizeof(tty_dev));
+	} else {
 		int tty0;
 
 		/* Other-other-wise, look for a free VT we can use by querying
@@ -108,12 +107,10 @@ static int vt_setup(struct device *device)
 			return -errno;
 		}
 		close(tty0);
-		asprintf(&tty_dev, "/dev/tty%d", tty_num);
+		sprintf(tty_dev, "/dev/tty%d", tty_num);
 	}
 
-	assert(tty_dev);
 	device->vt_fd = open(tty_dev, O_RDWR | O_NOCTTY);
-	free(tty_dev);
 	if (device->vt_fd < 0) {
 		fprintf(stderr, "failed to open VT %d\n", tty_num);
 		return -errno;
@@ -196,7 +193,8 @@ static struct device *device_open(const char *filename)
 	 */
 	ret->kms_fd = open(filename, O_RDWR | O_CLOEXEC, 0);
 	if (ret->kms_fd < 0) {
-		fprintf(stderr, "warning: couldn't open %s: %m\n", filename);
+		fprintf(stderr, "warning: couldn't open %s: %s\n", filename,
+			strerror(errno));
 		goto err;
 	}
 
