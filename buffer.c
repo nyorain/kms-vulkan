@@ -132,8 +132,8 @@ static struct buffer *buffer_dumb_create(struct device *device, struct output *o
 	};
 	err = drmIoctl(device->kms_fd, DRM_IOCTL_MODE_CREATE_DUMB, &create);
 	if (err != 0) {
-		fprintf(stderr, "failed to create %u x %u dumb buffer: %m\n",
-			create.width, create.height);
+		fprintf(stderr, "failed to create %u x %u dumb buffer: %s\n",
+			create.width, create.height, strerror(errno));
 		goto err;
 	}
 	assert(create.handle > 0);
@@ -163,16 +163,16 @@ static struct buffer *buffer_dumb_create(struct device *device, struct output *o
 	};
 	err = drmIoctl(device->kms_fd, DRM_IOCTL_MODE_MAP_DUMB, &map);
 	if (err != 0) {
-		fprintf(stderr, "failed to get %u x %u mmap offset: %m\n",
-			ret->width, ret->height);
+		fprintf(stderr, "failed to get %u x %u mmap offset: %s\n",
+			ret->width, ret->height, strerror(errno));
 		goto err_dumb;
 	}
 
 	ret->dumb.mem = mmap(NULL, create.size, PROT_WRITE, MAP_SHARED,
 			     device->kms_fd, map.offset);
 	if (ret->dumb.mem == MAP_FAILED) {
-		fprintf(stderr, "failed to mmap %u x %u dumb buffer: %m\n",
-			ret->width, ret->height);
+		fprintf(stderr, "failed to mmap %u x %u dumb buffer: %s\n",
+			ret->width, ret->height, strerror(errno));
 		goto err_dumb;
 	}
 	ret->dumb.size = create.size;
@@ -245,10 +245,10 @@ struct buffer *buffer_create(struct device *device, struct output *output)
 	}
 
 	if (err != 0 || ret->fb_id == 0) {
-		fprintf(stderr, "failed AddFB2 on %u x %u %s (modifier 0x%" PRIx64 ") buffer: %m\n",
+		fprintf(stderr, "failed AddFB2 on %u x %u %s (modifier 0x%" PRIx64 ") buffer: %s\n",
 			ret->width, ret->height,
 			(ret->dumb.mem) ? "dumb" : "GBM",
-			ret->modifier);
+			ret->modifier, strerror(errno));
 		goto err;
 	}
 	return ret;

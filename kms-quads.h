@@ -27,6 +27,7 @@
 #include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include <unistd.h>
 #include <time.h>
 #include <sys/ioctl.h>
@@ -319,7 +320,7 @@ struct output {
 	struct device *device;
 
 	/* A friendly name. */
-	char *name;
+	char name[32];
 
 	/*
 	 * Should we render this output the next time we go through the
@@ -540,14 +541,13 @@ fd_dup_into(int *target, int source)
 static bool
 linux_sync_file_is_valid(int fd)
 {
-        struct sync_file_info file_info;
-
+	struct sync_file_info file_info;
 	memset(&file_info, 0, sizeof(file_info));
 
-        if (ioctl(fd, SYNC_IOC_FILE_INFO, &file_info) < 0)
-                return false;
+	if (ioctl(fd, SYNC_IOC_FILE_INFO, &file_info) < 0)
+		return false;
 
-        return file_info.num_fences > 0;
+	return file_info.num_fences > 0;
 }
 
 static uint64_t
