@@ -33,8 +33,35 @@ else
   deps += dependency('glesv2')
 endif
 
-executable('kms-quads',
-  'main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c',
+# generate vulkan shaders
+shaders = []
+glslang = find_program('glslangValidator')
+shaders_src = [
+	'vulkan.vert',
+	'vulkan.frag',
+]
+
+foreach shader : shaders_src
+	name = shader.underscorify() + '_data'
+	args = [glslang, '-V', '@INPUT@', '-o', '@OUTPUT@', '--vn', name]
+	header = custom_target(
+		shader + '_spv',
+		output: shader + '.h',
+		input: shader,
+		command: args)
+	shaders += [header]
+endforeach
+
+src = [
+  'main.c',
+  'buffer.c',
+  'device.c',
+  'edid.c',
+  'egl-gles.c',
+  'kms.c',
+  shaders,
+]
+executable('kms-quads', src,
   dependencies: deps,
   c_args: defines,
 )
