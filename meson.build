@@ -33,6 +33,24 @@ else
   deps += dependency('glesv2')
 endif
 
+shaders = []
+glslang = find_program('glslangValidator')
+shaders_src = [
+	'vulkan.vert',
+	'vulkan.frag',
+]
+
+foreach shader : shaders_src
+	name = shader.underscorify() + '_data'
+	args = [glslang, '-V', '@INPUT@', '-o', '@OUTPUT@', '--vn', name]
+	header = custom_target(
+		shader + '_spv',
+		output: shader + '.h',
+		input: shader,
+		command: args)
+	shaders += [header]
+endforeach
+
 sources = files('main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c')
 
 logind = dependency('lib' + get_option('logind-provider'), required: get_option('logind'), version: '>=237')
