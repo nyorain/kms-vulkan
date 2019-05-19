@@ -57,6 +57,8 @@ struct vk_device {
 };
 
 struct vk_image {
+	struct buffer buffer;
+
 	VkDeviceMemory memory;
 	VkImage image;
 	VkCommandBuffer cb;
@@ -443,6 +445,13 @@ bool init_pipeline(struct vk_device *dev)
 
 struct vk_device *vk_device_create(struct device *device)
 {
+	// check for drm device support
+	// vulkan requires modifier support to import dma bufs
+	if (!device->fb_modifiers) {
+		debug("Can't use vulkan since drm doesn't support modifiers");
+		return NULL;
+	}
+
 	// query extension support
 	uint32_t avail_extc = 0;
 	VkResult res;
@@ -670,9 +679,58 @@ struct vk_device *vk_device_create(struct device *device)
 		goto error;
 	}
 
+	// TODO: query and store supported format modifiers (bgra8unorm)
+	// check that we can use it as color attachment image
+
 	return vk_dev;
 
 error:
 	vk_device_destroy(vk_dev);
 	return NULL;
+}
+
+struct buffer *buffer_vk_create(struct device *device, struct output *output)
+{
+	struct vk_image *img = calloc(1, sizeof(*img));
+	struct vk_device *vk_dev; // = TODO, retrieve from device
+
+	// create gbm bo with modifiers supported by output and vulkan
+
+	// import gbm bo memory, create image on it
+
+	// create framebuffer for imported image
+
+	// create command buffer
+
+	// record render pass on imported image into command buffer
+
+	// create render fence, export it as syncfile to buffer->render_fence_fd
+
+	// success!
+	return &img->buffer;
+}
+
+void buffer_vk_destroy(struct device *device, struct buffer *buffer)
+{
+	struct vk_image *img = (struct vk_image *)buffer;
+	// TODO: destroy everything in reverse order
+}
+
+void buffer_vk_fill(struct buffer *buffer, int frame_num)
+{
+	struct vk_image *img = (struct vk_image *)buffer;
+	struct vk_device *vk_dev; // = TODO, retrieve from buffer
+
+	// import kms_fence_fd as semaphore
+	// TODO: when to destroy the previous kms_fence_fd? is it enough
+	//   if we do that here? i guess the fence still has be alive.
+	//   Probably requires changes to main.c/kms.c, we close the fence
+	//   in fd_replace i guess, main.c:408? maybe create own temporary
+	//   duplicate and import that instead as temporary hack for now?
+
+	// reset the fence from the previous frame
+
+	// submit the buffers command buffer
+	// - it waits for the kms_fence_fd semaphore
+	// - upon completion, it signals the render fence
 }
