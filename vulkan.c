@@ -30,9 +30,46 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <vulkan.frag.h>
+#include <vulkan.vert.h>
+
+struct vk_device {
+	VkInstance instance;
+	VkDebugUtilsMessengerEXT messenger;
+
+	struct {
+		PFN_vkCreateDebugUtilsMessengerEXT createDebugUtilsMessengerEXT;
+		PFN_vkDestroyDebugUtilsMessengerEXT destroyDebugUtilsMessengerEXT;
+		PFN_vkGetMemoryFdPropertiesKHR getMemoryFdPropertiesKHR;
+	} api;
+
+	VkPhysicalDevice phdev;
+	VkDevice dev;
+
+	uint32_t queue_family;
+	VkQueue queue;
+
+	// pipeline
+	VkRenderPass rp;
+	VkPipelineLayout pipe_layout;
+	VkPipeline pipe;
+	VkCommandPool command_pool;
+};
+
+struct vk_image {
+	VkDeviceMemory memory;
+	VkImage image;
+	VkCommandBuffer cb;
+	VkFramebuffer fb;
+
+	VkSemaphore render; // signaled when rendering finishes
+	VkFence outfence; // signaled by kernel when image can be reused
+};
+
 #define vk_error(res, fmt, ...) error(fmt ": %s (%d)", \
 	vulkan_strerror(res), res, ##__VA_ARGS__)
 
+// Returns a VkResult value as string.
 const char *vulkan_strerror(VkResult err) {
 	#define ERR_STR(r) case VK_ ##r: return #r
 	switch (err) {
@@ -68,23 +105,6 @@ const char *vulkan_strerror(VkResult err) {
 	}
 	#undef STR
 }
-
-struct vk_device {
-	VkInstance instance;
-	VkDebugUtilsMessengerEXT messenger;
-
-	struct {
-		PFN_vkCreateDebugUtilsMessengerEXT createDebugUtilsMessengerEXT;
-		PFN_vkDestroyDebugUtilsMessengerEXT destroyDebugUtilsMessengerEXT;
-		PFN_vkGetMemoryFdPropertiesKHR getMemoryFdPropertiesKHR;
-	} api;
-
-	VkPhysicalDevice phdev;
-	VkDevice dev;
-
-	uint32_t queue_family;
-	VkQueue queue;
-};
 
 static bool has_extension(const VkExtensionProperties *avail,
 	uint32_t availc, const char *req)
@@ -197,10 +217,231 @@ bool match(drmPciBusInfoPtr pci_bus_info, VkPhysicalDevice phdev,
 		pci_props.pciDevice == pci_bus_info->dev &&
 		pci_props.pciDomain == pci_bus_info->domain &&
 		pci_props.pciFunction == pci_bus_info->func;
+
+#ifdef DEBUG
+	if (match) {
+		VkPhysicalDeviceProperties *props = &phdev_props.properties;
+		uint32_t vv_major = (props->apiVersion >> 22);
+		uint32_t vv_minor = (props->apiVersion >> 12) & 0x3ff;
+		uint32_t vv_patch = (props->apiVersion) & 0xfff;
+
+		uint32_t dv_major = (props->driverVersion >> 22);
+		uint32_t dv_minor = (props->driverVersion >> 12) & 0x3ff;
+		uint32_t dv_patch = (props->driverVersion) & 0xfff;
+
+		const char* dev_type = "unknown";
+		switch(props->deviceType) {
+			case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+				dev_type = "integrated";
+				break;
+			case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+				dev_type = "discrete";
+				break;
+			case VK_PHYSICAL_DEVICE_TYPE_CPU:
+				dev_type = "cpu";
+				break;
+			case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+				dev_type = "gpu";
+				break;
+			default:
+				break;
+		}
+
+		debug("Vulkan device: '%s'", props->deviceName);
+		debug("Device type: '%s'", dev_type);
+		debug("Supported API version: %u.%u.%u", vv_major, vv_minor, vv_patch);
+		debug("Driver version: %u.%u.%u", dv_major, dv_minor, dv_patch);
+	}
+#endif
+
 	return match;
 }
 
-struct vulkan_device *vk_device_create(struct device *device)
+void vk_device_destroy(struct vk_device *device)
+{
+	if (device->dev) {
+		vkDestroyDevice(device->dev, NULL);
+	}
+	if (device->messenger && device->api.destroyDebugUtilsMessengerEXT) {
+		device->api.destroyDebugUtilsMessengerEXT(device->instance,
+			device->messenger, NULL);
+	}
+	if (device->instance) {
+		vkDestroyInstance(device->instance, NULL);
+	}
+	free(device);
+}
+
+bool init_pipeline(struct vk_device *dev)
+{
+	// This corresponds to the XRGB drm format (reversed endianess).
+	// The egl format hardcodes this format so we can probably too.
+	// It's guaranteed to be supported by the vulkan spec for everything
+	// we need.
+	VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
+
+	// render pass
+	// NOTE: we don't care about previous contents of the image since
+	// we always render the full image. For incremental presentation you
+	// have to use LOAD_OP_STORE and a valid image layout.
+	VkAttachmentDescription attachment = {0};
+	attachment.format = format;
+	attachment.samples = VK_SAMPLE_COUNT_1_BIT;
+	attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+	attachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+	// can basically be anything since we have to manually transition
+	// the image afterwards anyways (see depdency reasoning below)
+	attachment.finalLayout = VK_IMAGE_LAYOUT_GENERAL;
+
+	VkAttachmentReference color_ref = {0};
+	color_ref.attachment = 0u;
+	color_ref.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+	VkSubpassDescription subpass = {0};
+	subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+	subpass.colorAttachmentCount = 1;
+	subpass.pColorAttachments = &color_ref;
+
+	// Note how we don't specify any subpass dependencies. The transfer
+	// of an image to an external queue (i.e. transfer logical ownership
+	// of the image from the vulkan driver to drm) can't be represented
+	// as a subpass dependency, so we have to transition the image
+	// after and before a renderpass manually anyways.
+	VkRenderPassCreateInfo rp_info = {0};
+	rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
+	rp_info.attachmentCount = 1;
+	rp_info.pAttachments = &attachment;
+	rp_info.subpassCount = 1;
+	rp_info.pSubpasses = &subpass;
+	VkResult res = vkCreateRenderPass(dev->dev, &rp_info, NULL, &dev->rp);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkCreateRenderPass");
+		return false;
+	}
+
+	// pipeline layout
+	// our simple pipeline doesn't use any descriptor sets or push constants,
+	// so the pipeline layout is trivial
+	VkPipelineLayoutCreateInfo pli = {0};
+	pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	res = vkCreatePipelineLayout(dev->dev, &pli, NULL, &dev->pipe_layout);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkCreatePipelineLayout");
+		return false;
+	}
+
+	// pipeline
+	VkShaderModule vert_module;
+	VkShaderModule frag_module;
+
+	VkShaderModuleCreateInfo si;
+	si.codeSize = sizeof(vulkan_vert_data);
+	si.pCode = vulkan_vert_data;
+	res = vkCreateShaderModule(dev->dev, &si, NULL, &vert_module);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "Failed to create vertex shader module");
+		return false;
+	}
+
+	si.codeSize = sizeof(vulkan_frag_data);
+	si.pCode = vulkan_frag_data;
+	res = vkCreateShaderModule(dev->dev, &si, NULL, &frag_module);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "Failed to create fragment shader module");
+		vkDestroyShaderModule(dev->dev, vert_module, NULL);
+		return false;
+	}
+
+	VkPipelineShaderStageCreateInfo pipe_stages[2] = {{
+			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, vert_module, "main", NULL
+		}, {
+			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+			NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag_module, "main", NULL
+		}
+	};
+
+	// info
+	VkPipelineInputAssemblyStateCreateInfo assembly = {0};
+	assembly.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+	assembly.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN;
+
+	VkPipelineRasterizationStateCreateInfo rasterization = {0};
+	rasterization.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+	rasterization.polygonMode = VK_POLYGON_MODE_FILL;
+	rasterization.cullMode = VK_CULL_MODE_NONE;
+	rasterization.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+	rasterization.lineWidth = 1.f;
+
+	VkPipelineColorBlendAttachmentState blend_attachment = {0};
+	blend_attachment.blendEnable = false;
+	blend_attachment.colorWriteMask =
+		VK_COLOR_COMPONENT_R_BIT |
+		VK_COLOR_COMPONENT_G_BIT |
+		VK_COLOR_COMPONENT_B_BIT |
+		VK_COLOR_COMPONENT_A_BIT;
+
+	VkPipelineColorBlendStateCreateInfo blend = {0};
+	blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+	blend.attachmentCount = 1;
+	blend.pAttachments = &blend_attachment;
+
+	VkPipelineMultisampleStateCreateInfo multisample = {0};
+	multisample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+	multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+	VkPipelineViewportStateCreateInfo viewport = {0};
+	viewport.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+	viewport.viewportCount = 1;
+	viewport.scissorCount = 1;
+
+	VkDynamicState dynStates[2] = {
+		VK_DYNAMIC_STATE_VIEWPORT,
+    	VK_DYNAMIC_STATE_SCISSOR,
+	};
+	VkPipelineDynamicStateCreateInfo dynamic = {0};
+	dynamic.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+	dynamic.pDynamicStates = dynStates;
+	dynamic.dynamicStateCount = 2;
+
+	VkPipelineVertexInputStateCreateInfo vertex = {0};
+	vertex.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+
+	VkGraphicsPipelineCreateInfo pipe_info = {0};
+	pipe_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+	pipe_info.layout = dev->pipe_layout;
+	pipe_info.renderPass = dev->rp;
+	pipe_info.subpass = 0;
+	pipe_info.stageCount = 2;
+	pipe_info.pStages = pipe_stages;
+
+	pipe_info.pInputAssemblyState = &assembly;
+	pipe_info.pRasterizationState = &rasterization;
+	pipe_info.pColorBlendState = &blend;
+	pipe_info.pMultisampleState = &multisample;
+	pipe_info.pViewportState = &viewport;
+	pipe_info.pDynamicState = &dynamic;
+	pipe_info.pVertexInputState = &vertex;
+
+	// NOTE: could use a cache here for faster loading
+	// store it somewhere like $XDG_CACHE_HOME/wlroots/vk_pipe_cache
+	VkPipelineCache cache = VK_NULL_HANDLE;
+	res = vkCreateGraphicsPipelines(dev->dev, cache, 1, &pipe_info,
+		NULL, &dev->pipe);
+	vkDestroyShaderModule(dev->dev, vert_module, NULL);
+	vkDestroyShaderModule(dev->dev, frag_module, NULL);
+	if (res != VK_SUCCESS) {
+		error("failed to create vulkan pipeline: %d", res);
+		return false;
+	}
+
+	return true;
+}
+
+struct vk_device *vk_device_create(struct device *device)
 {
 	// query extension support
 	uint32_t avail_extc = 0;
@@ -221,7 +462,7 @@ struct vulkan_device *vk_device_create(struct device *device)
 
 	for (size_t j = 0; j < avail_extc; ++j) {
 		debug("Vulkan Instance extensions %s",
-			avail_ext_props[j].extensionName);
+			avail_exts[j].extensionName);
 	}
 
 	struct vk_device *vk_dev = calloc(1, sizeof(*vk_dev));
@@ -323,6 +564,10 @@ struct vulkan_device *vk_device_create(struct device *device)
 		goto error;
 	}
 
+	drmPciBusInfoPtr pci = drm_dev->businfo.pci;
+	debug("PCI bus: %04x:%02x:%02x.%x", pci->domain,
+		pci->bus, pci->dev, pci->func);
+
 	VkExtensionProperties *phdev_exts;
 	uint32_t phdev_extc;
 	VkPhysicalDevice phdev = VK_NULL_HANDLE;
@@ -337,6 +582,28 @@ struct vulkan_device *vk_device_create(struct device *device)
 	if (phdev == VK_NULL_HANDLE) {
 		error("Can't find vulkan physical device for drm dev");
 		goto error;
+	}
+
+	// query extensions
+	const char* dev_exts[] = {
+		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
+		VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
+		VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
+		VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, // required by drm ext
+
+		// NOTE: strictly speaking this extension is required to
+		// correctly transfer image ownership but since no mesa
+		// driver implements its yet (no even an updated patch for that),
+		// let's see how far we get without it
+		// VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
+	};
+
+	for (unsigned i = 0u; i < ARRAY_LENGTH(dev_exts); ++i) {
+		if (!has_extension(phdev_exts, phdev_extc, dev_exts[i])) {
+			error("Physical device doesn't supported required extension: %s",
+				dev_exts[i]);
+			goto error;
+		}
 	}
 
 	// create device
@@ -357,6 +624,7 @@ struct vulkan_device *vk_device_create(struct device *device)
 	// vulkan standard guarantees that the must be at least one graphics
 	// queue family
 	assert(qfam != 0xFFFFFFFFu);
+	vk_dev->queue_family = qfam;
 
 	// info
 	float prio = 1.f;
@@ -370,8 +638,8 @@ struct vulkan_device *vk_device_create(struct device *device)
 	dev_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	dev_info.queueCreateInfoCount = 1;
 	dev_info.pQueueCreateInfos = &qinfo;
-	dev_info.enabledExtensionCount = dev->extension_count;
-	dev_info.ppEnabledExtensionNames = dev->extensions;
+	dev_info.enabledExtensionCount = ARRAY_LENGTH(dev_exts);
+	dev_info.ppEnabledExtensionNames = dev_exts;
 
 	res = vkCreateDevice(phdev, &dev_info, NULL, &vk_dev->dev);
 	if (res != VK_SUCCESS){
@@ -379,6 +647,32 @@ struct vulkan_device *vk_device_create(struct device *device)
 		goto error;
 	}
 
+	vkGetDeviceQueue(vk_dev->dev, vk_dev->queue_family, 0, &vk_dev->queue);
+	vk_dev->api.getMemoryFdPropertiesKHR = (PFN_vkGetMemoryFdPropertiesKHR)
+		vkGetDeviceProcAddr(vk_dev->dev, "vkGetMemoryFdPropertiesKHR");
+	if (!vk_dev->api.getMemoryFdPropertiesKHR) {
+		error("Failed to retrieve vkGetMemoryFdPropertiesKHR");
+		goto error;
+	}
+
+	// command pool
+	VkCommandPoolCreateInfo cpi = {0};
+	cpi.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+	cpi.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+	cpi.queueFamilyIndex = vk_dev->queue_family;
+	res = vkCreateCommandPool(vk_dev->dev, &cpi, NULL, &vk_dev->command_pool);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkCreateCommandPool");
+		goto error;
+	}
+
+	if (!init_pipeline(vk_dev)) {
+		goto error;
+	}
+
+	return vk_dev;
+
 error:
 	vk_device_destroy(vk_dev);
+	return NULL;
 }
