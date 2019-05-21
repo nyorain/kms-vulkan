@@ -51,6 +51,7 @@ struct vk_device {
 		PFN_vkDestroyDebugUtilsMessengerEXT destroyDebugUtilsMessengerEXT;
 		PFN_vkGetMemoryFdPropertiesKHR getMemoryFdPropertiesKHR;
 		PFN_vkGetFenceFdKHR getFenceFdKHR;
+		PFN_vkGetSemaphoreFdKHR getSemaphoreFdKHR;
 		PFN_vkImportSemaphoreFdKHR importSemaphoreFdKHR;
 	} api;
 
@@ -77,11 +78,12 @@ struct vk_image {
 	VkFramebuffer fb;
 
 	VkSemaphore buffer_semaphore; // signaled by kernal when image can be reused
+	VkSemaphore render_semaphore; // signaled by vulkan when rendering finishes
 	VkFence render_fence; // signaled by vulkan when rendering finishes
 };
 
 // #define vk_error(res, fmt, ...)
-#define vk_error(res, fmt) error(fmt ": %s (%d)", vulkan_strerror(res), res)
+#define vk_error(res, fmt) error(fmt ": %s (%d)\n", vulkan_strerror(res), res)
 
 // Returns a VkResult value as string.
 static const char *vulkan_strerror(VkResult err) {
@@ -195,27 +197,32 @@ static VkBool32 debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 			break;
 	}
 
-	debug("%s: %s (%s)", importance, debug_data->pMessage,
+	debug("%s: %s (%s)\n", importance, debug_data->pMessage,
 		debug_data->pMessageIdName);
 	if (debug_data->queueLabelCount > 0) {
 		const char *name = debug_data->pQueueLabels[0].pLabelName;
 		if (name) {
-			debug("    last queue label '%s'", name);
+			debug("    last queue label '%s'\n", name);
 		}
 	}
 
 	if (debug_data->cmdBufLabelCount > 0) {
 		const char *name = debug_data->pCmdBufLabels[0].pLabelName;
 		if (name) {
-			debug("    last cmdbuf label '%s'", name);
+			debug("    last cmdbuf label '%s'\n", name);
 		}
 	}
 
 	for (unsigned i = 0; i < debug_data->objectCount; ++i) {
 		if (debug_data->pObjects[i].pObjectName) {
-			debug("    involving '%s'", debug_data->pMessage);
+			debug("    involving '%s'\n", debug_data->pMessage);
 		}
 	}
+
+	// TODO: returning true not allowed by spec but helpful for debugging
+	// makes function that caused the error return validation_failed
+	// error which we can detect
+	// return true;
 
 	return false;
 }
@@ -235,7 +242,7 @@ bool match(drmPciBusInfoPtr pci_bus_info, VkPhysicalDevice phdev,
 		return false;
 	}
 
-	exts = realloc(exts, sizeof(**exts) * *extc);
+	*exts = realloc(*exts, sizeof(**exts) * *extc);
 	res = vkEnumerateDeviceExtensionProperties(phdev, NULL,
 		extc, *exts);
 	if (res != VK_SUCCESS) {
@@ -244,14 +251,14 @@ bool match(drmPciBusInfoPtr pci_bus_info, VkPhysicalDevice phdev,
 	}
 
 	if (!has_extension(*exts, *extc, VK_EXT_PCI_BUS_INFO_EXTENSION_NAME)) {
-		error("Physical device has not support for VK_EXT_pci_bus_info");
+		error("Physical device has not support for VK_EXT_pci_bus_info\n");
 		return false;
 	}
 
-	VkPhysicalDevicePCIBusInfoPropertiesEXT pci_props;
+	VkPhysicalDevicePCIBusInfoPropertiesEXT pci_props = {0};
 	pci_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PCI_BUS_INFO_PROPERTIES_EXT;
 
-	VkPhysicalDeviceProperties2 phdev_props;
+	VkPhysicalDeviceProperties2 phdev_props = {0};
 	phdev_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
 	phdev_props.pNext = &pci_props;
 
@@ -261,41 +268,38 @@ bool match(drmPciBusInfoPtr pci_bus_info, VkPhysicalDevice phdev,
 		pci_props.pciDomain == pci_bus_info->domain &&
 		pci_props.pciFunction == pci_bus_info->func;
 
-#ifdef DEBUG
-	if (match) {
-		VkPhysicalDeviceProperties *props = &phdev_props.properties;
-		uint32_t vv_major = (props->apiVersion >> 22);
-		uint32_t vv_minor = (props->apiVersion >> 12) & 0x3ff;
-		uint32_t vv_patch = (props->apiVersion) & 0xfff;
+	VkPhysicalDeviceProperties *props = &phdev_props.properties;
+	uint32_t vv_major = (props->apiVersion >> 22);
+	uint32_t vv_minor = (props->apiVersion >> 12) & 0x3ff;
+	uint32_t vv_patch = (props->apiVersion) & 0xfff;
 
-		uint32_t dv_major = (props->driverVersion >> 22);
-		uint32_t dv_minor = (props->driverVersion >> 12) & 0x3ff;
-		uint32_t dv_patch = (props->driverVersion) & 0xfff;
+	uint32_t dv_major = (props->driverVersion >> 22);
+	uint32_t dv_minor = (props->driverVersion >> 12) & 0x3ff;
+	uint32_t dv_patch = (props->driverVersion) & 0xfff;
 
-		const char* dev_type = "unknown";
-		switch(props->deviceType) {
-			case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
-				dev_type = "integrated";
-				break;
-			case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
-				dev_type = "discrete";
-				break;
-			case VK_PHYSICAL_DEVICE_TYPE_CPU:
-				dev_type = "cpu";
-				break;
-			case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
-				dev_type = "gpu";
-				break;
-			default:
-				break;
-		}
-
-		debug("Vulkan device: '%s'", props->deviceName);
-		debug("Device type: '%s'", dev_type);
-		debug("Supported API version: %u.%u.%u", vv_major, vv_minor, vv_patch);
-		debug("Driver version: %u.%u.%u", dv_major, dv_minor, dv_patch);
+	const char* dev_type = "unknown";
+	switch(props->deviceType) {
+		case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+			dev_type = "integrated";
+			break;
+		case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+			dev_type = "discrete";
+			break;
+		case VK_PHYSICAL_DEVICE_TYPE_CPU:
+			dev_type = "cpu";
+			break;
+		case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+			dev_type = "gpu";
+			break;
+		default:
+			break;
 	}
-#endif
+
+	debug("Vulkan device: '%s'\n", props->deviceName);
+	debug("  Device type: '%s'\n", dev_type);
+	debug("  Supported API version: %u.%u.%u\n", vv_major, vv_minor, vv_patch);
+	debug("  Driver version: %u.%u.%u\n", dv_major, dv_minor, dv_patch);
+	debug("  match: %d\n", (int) match);
 
 	return match;
 }
@@ -315,7 +319,7 @@ void vk_device_destroy(struct vk_device *device)
 	free(device);
 }
 
-bool init_pipeline(struct vk_device *dev)
+static bool init_pipeline(struct vk_device *dev)
 {
 
 	// render pass
@@ -325,7 +329,8 @@ bool init_pipeline(struct vk_device *dev)
 	VkAttachmentDescription attachment = {0};
 	attachment.format = format;
 	attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-	attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	// attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -375,7 +380,8 @@ bool init_pipeline(struct vk_device *dev)
 	VkShaderModule vert_module;
 	VkShaderModule frag_module;
 
-	VkShaderModuleCreateInfo si;
+	VkShaderModuleCreateInfo si = {0};
+	si.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
 	si.codeSize = sizeof(vulkan_vert_data);
 	si.pCode = vulkan_vert_data;
 	res = vkCreateShaderModule(dev->dev, &si, NULL, &vert_module);
@@ -395,7 +401,7 @@ bool init_pipeline(struct vk_device *dev)
 
 	VkPipelineShaderStageCreateInfo pipe_stages[2] = {{
 			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-			NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, vert_module, "main", NULL
+			NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, vert_module, "main", NULL
 		}, {
 			VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
 			NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, frag_module, "main", NULL
@@ -419,8 +425,7 @@ bool init_pipeline(struct vk_device *dev)
 	blend_attachment.colorWriteMask =
 		VK_COLOR_COMPONENT_R_BIT |
 		VK_COLOR_COMPONENT_G_BIT |
-		VK_COLOR_COMPONENT_B_BIT |
-		VK_COLOR_COMPONENT_A_BIT;
+		VK_COLOR_COMPONENT_B_BIT;
 
 	VkPipelineColorBlendStateCreateInfo blend = {0};
 	blend.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -472,7 +477,7 @@ bool init_pipeline(struct vk_device *dev)
 	vkDestroyShaderModule(dev->dev, vert_module, NULL);
 	vkDestroyShaderModule(dev->dev, frag_module, NULL);
 	if (res != VK_SUCCESS) {
-		error("failed to create vulkan pipeline: %d", res);
+		error("failed to create vulkan pipeline: %d\n", res);
 		return false;
 	}
 
@@ -484,7 +489,7 @@ struct vk_device *vk_device_create(struct device *device)
 	// check for drm device support
 	// vulkan requires modifier support to import dma bufs
 	if (!device->fb_modifiers) {
-		debug("Can't use vulkan since drm doesn't support modifiers");
+		debug("Can't use vulkan since drm doesn't support modifiers\n");
 		return NULL;
 	}
 
@@ -497,6 +502,7 @@ struct vk_device *vk_device_create(struct device *device)
 		return NULL;
 	}
 
+	// TODO: remove vla
 	VkExtensionProperties avail_exts[avail_extc + 1];
 	res = vkEnumerateInstanceExtensionProperties(NULL, &avail_extc,
 		avail_exts);
@@ -506,8 +512,7 @@ struct vk_device *vk_device_create(struct device *device)
 	}
 
 	for (size_t j = 0; j < avail_extc; ++j) {
-		debug("Vulkan Instance extensions %s",
-			avail_exts[j].extensionName);
+		debug("Vulkan Instance extensions %s\n", avail_exts[j].extensionName);
 	}
 
 	struct vk_device *vk_dev = calloc(1, sizeof(*vk_dev));
@@ -579,7 +584,7 @@ struct vk_device *vk_device_create(struct device *device)
 			vk_dev->api.createDebugUtilsMessengerEXT(vk_dev->instance,
 				&debug_info, NULL, &vk_dev->messenger);
 		} else {
-			error("vkCreateDebugUtilsMessengerEXT not found");
+			error("vkCreateDebugUtilsMessengerEXT not found\n");
 		}
 	}
 
@@ -605,16 +610,16 @@ struct vk_device *vk_device_create(struct device *device)
 	if(drm_dev->bustype != DRM_BUS_PCI) {
 		// NOTE: we could check that/gather the pci information
 		// on device creation
-		error("Given device isn't a pci device");
+		error("Given device isn't a pci device\n");
 		goto error;
 	}
 
 	drmPciBusInfoPtr pci = drm_dev->businfo.pci;
-	debug("PCI bus: %04x:%02x:%02x.%x", pci->domain,
+	debug("PCI bus: %04x:%02x:%02x.%x\n", pci->domain,
 		pci->bus, pci->dev, pci->func);
 
-	VkExtensionProperties *phdev_exts;
-	uint32_t phdev_extc;
+	VkExtensionProperties *phdev_exts = NULL;
+	uint32_t phdev_extc = 0;
 	VkPhysicalDevice phdev = VK_NULL_HANDLE;
 	for (unsigned i = 0u; i < num_phdevs; ++i) {
 		VkPhysicalDevice phdevi = phdevs[i];
@@ -625,14 +630,21 @@ struct vk_device *vk_device_create(struct device *device)
 	}
 
 	if (phdev == VK_NULL_HANDLE) {
-		error("Can't find vulkan physical device for drm dev");
+		error("Can't find vulkan physical device for drm dev\n");
 		goto error;
+	}
+
+	for (size_t j = 0; j < phdev_extc; ++j) {
+		debug("Vulkan Device extensions %s\n", phdev_exts[j].extensionName);
 	}
 
 	vk_dev->phdev = phdev;
 
 	// query extensions
 	const char* dev_exts[] = {
+		VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME,
+		VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+
 		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
 		VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
 		VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
@@ -647,7 +659,7 @@ struct vk_device *vk_device_create(struct device *device)
 
 	for (unsigned i = 0u; i < ARRAY_LENGTH(dev_exts); ++i) {
 		if (!has_extension(phdev_exts, phdev_extc, dev_exts[i])) {
-			error("Physical device doesn't supported required extension: %s",
+			error("Physical device doesn't supported required extension: %s\n",
 				dev_exts[i]);
 			goto error;
 		}
@@ -675,7 +687,7 @@ struct vk_device *vk_device_create(struct device *device)
 
 	// info
 	float prio = 1.f;
-	VkDeviceQueueCreateInfo qinfo;
+	VkDeviceQueueCreateInfo qinfo = {0};
 	qinfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
 	qinfo.queueFamilyIndex = qfam;
 	qinfo.queueCount = 1;
@@ -698,21 +710,28 @@ struct vk_device *vk_device_create(struct device *device)
 	vk_dev->api.getMemoryFdPropertiesKHR = (PFN_vkGetMemoryFdPropertiesKHR)
 		vkGetDeviceProcAddr(vk_dev->dev, "vkGetMemoryFdPropertiesKHR");
 	if (!vk_dev->api.getMemoryFdPropertiesKHR) {
-		error("Failed to retrieve vkGetMemoryFdPropertiesKHR");
+		error("Failed to retrieve vkGetMemoryFdPropertiesKHR\n");
 		goto error;
 	}
 
 	vk_dev->api.getFenceFdKHR = (PFN_vkGetFenceFdKHR)
 		vkGetDeviceProcAddr(vk_dev->dev, "vkGetFenceFdKHR");
 	if (!vk_dev->api.getFenceFdKHR) {
-		error("Failed to retrieve vkGetFenceFdKHR");
+		error("Failed to retrieve vkGetFenceFdKHR\n");
+		goto error;
+	}
+
+	vk_dev->api.getSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)
+		vkGetDeviceProcAddr(vk_dev->dev, "vkGetSemaphoreFdKHR");
+	if (!vk_dev->api.getSemaphoreFdKHR) {
+		error("Failed to retrieve vkGetSemaphoreFdKHR\n");
 		goto error;
 	}
 
 	vk_dev->api.importSemaphoreFdKHR = (PFN_vkImportSemaphoreFdKHR)
 		vkGetDeviceProcAddr(vk_dev->dev, "vkImportSemaphoreFdKHR");
 	if (!vk_dev->api.importSemaphoreFdKHR) {
-		error("Failed to retrieve vkImportSemaphoreFdKHR");
+		error("Failed to retrieve vkImportSemaphoreFdKHR\n");
 		goto error;
 	}
 
@@ -758,7 +777,7 @@ struct vk_device *vk_device_create(struct device *device)
 	efi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
 
 	VkExternalFenceProperties efp = {0};
-	esp.sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES;
+	efp.sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES;
 	vkGetPhysicalDeviceExternalFenceProperties(phdev, &efi, &efp);
 
 	if((efp.externalFenceFeatures &
@@ -780,7 +799,8 @@ error:
 	return NULL;
 }
 
-bool output_vulkan_setup(struct output *output) {
+bool output_vulkan_setup(struct output *output)
+{
 	struct vk_device *vk_dev = output->device->vk_device;
 	assert(vk_dev);
 	VkResult res;
@@ -848,16 +868,19 @@ bool output_vulkan_setup(struct output *output) {
 
 		// we need dmabufs with the given format and modifier to be importable
 		// otherwise we can't use the modifier
-		if ((efmtp.externalMemoryProperties.compatibleHandleTypes &
-				VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) == 0) {
-			continue;
-		}
+		// if ((efmtp.externalMemoryProperties.compatibleHandleTypes &
+		// 		VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) == 0) {
+		// 	debug("KMS modifier %lu not supported by vulkan (1)\n", mod);
+		// 	continue;
+		// }
 		if ((efmtp.externalMemoryProperties.externalMemoryFeatures &
 				VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) == 0) {
+			debug("KMS modifier %lu not supported by vulkan (2)\n", mod);
 			continue;
 		}
 
 		smods[smod_count++] = mod;
+		debug("Vulkan and KMS support modifier %lu\n", mod);
 
 		// TODO: query and check basic image properties such as
 		// maxExtent. Stored in ifmtp
@@ -889,7 +912,6 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	img->buffer.render_fence_fd = -1;
 	img->buffer.kms_fence_fd = -1;
 	img->buffer.format = DRM_FORMAT_XRGB8888;
-	img->buffer.format = DRM_FORMAT_XRGB8888;
 	img->buffer.width = output->mode.hdisplay;
 	img->buffer.height = output->mode.vdisplay;
 	uint32_t width = img->buffer.width;
@@ -897,7 +919,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 
 	// create gbm bo with modifiers supported by output and vulkan
 	img->buffer.gbm.bo = gbm_bo_create_with_modifiers(device->gbm_device,
-	   output->mode.hdisplay, output->mode.vdisplay, DRM_FORMAT_XRGB8888,
+	   width, height, DRM_FORMAT_XRGB8888,
 	   output->modifiers, output->num_modifiers);
 	if (!img->buffer.gbm.bo) {
 		error("failed to create %u x %u BO\n", output->mode.hdisplay,
@@ -909,6 +931,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	img->buffer.modifier = gbm_bo_get_modifier(bo);
 	num_planes = gbm_bo_get_plane_count(bo);
 	VkSubresourceLayout plane_layouts[4] = {0};
+	debug("Creating buffer with modifier %lu\n", img->buffer.modifier);
 	for (unsigned i = 0; i < num_planes; i++) { // like egl-gles.c
 		union gbm_bo_handle h;
 
@@ -949,6 +972,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	// is that valid? In that case we can get away with 1 memory
 	// despite multiple planes i guess
 	bool disjoint = (num_planes > 1);
+	debug("plane count: %d\n", num_planes);
 
 	// create image (for dedicated allocation)
 	VkImageCreateInfo img_info = {0};
@@ -963,7 +987,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	img_info.extent.width = width;
 	img_info.extent.height = height;
 	img_info.extent.depth = 1;
-	img_info.usage = VK_IMAGE_USAGE_SAMPLED_BIT;
+	img_info.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
 	if (disjoint) {
 		img_info.flags = VK_IMAGE_CREATE_DISJOINT_BIT;
 	}
@@ -1127,6 +1151,8 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	uint32_t ext_qfam = VK_QUEUE_FAMILY_EXTERNAL;
 
 	VkImageMemoryBarrier barrier = {0};
+	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+	barrier.image = img->image;
 	barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT;
 	barrier.srcQueueFamilyIndex = ext_qfam;
@@ -1147,11 +1173,11 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	// Renderpass currently specifies don't care as loadOp (since we
 	// render the full framebuffer anyways), so we don't need
 	// clear values
-	// VkClearValue clear_value;
-	// clear_value.color.float32[0] = 0.05f;
-	// clear_value.color.float32[1] = 0.05f;
-	// clear_value.color.float32[2] = 0.05f;
-	// clear_value.color.float32[3] = 1.f;
+	VkClearValue clear_value;
+	clear_value.color.float32[0] = 0.1f;
+	clear_value.color.float32[1] = 0.1f;
+	clear_value.color.float32[2] = 0.1f;
+	clear_value.color.float32[3] = 1.f;
 	VkRect2D rect = {{0, 0}, {width, height}};
 
 	VkRenderPassBeginInfo rp_info = {0};
@@ -1159,8 +1185,8 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	rp_info.renderArea = rect;
 	rp_info.renderPass = vk_dev->rp;
 	rp_info.framebuffer = img->fb;
-	// rp_info.clearValueCount = 1;
-	// rp_info.pClearValues = &clear_value;
+	rp_info.clearValueCount = 1;
+	rp_info.pClearValues = &clear_value;
 	vkCmdBeginRenderPass(img->cb, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
 
 	VkViewport vp = {0.f, 0.f, (float) width, (float) height, 0.f, 1.f};
@@ -1169,6 +1195,8 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 
 	vkCmdBindPipeline(img->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_dev->pipe);
 	vkCmdDraw(img->cb, 4, 1, 0, 0);
+
+	vkCmdEndRenderPass(img->cb);
 
 	// release ownership of the image we want to render
 	barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
@@ -1206,13 +1234,15 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 		goto err;
 	}
 
-	VkFenceGetFdInfoKHR fdi = {0};
-	fdi.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
-	fdi.fence = img->render_fence;
-	fdi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
-	res = vk_dev->api.getFenceFdKHR(vk_dev->dev, &fdi, &img->buffer.render_fence_fd);
+	// create render semaphore
+	VkExportSemaphoreCreateInfo esi = {0};
+	esi.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+	esi.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+
+	sem_info.pNext = &esi;
+	res = vkCreateSemaphore(vk_dev->dev, &sem_info, NULL, &img->render_semaphore);
 	if (res != VK_SUCCESS) {
-		vk_error(res, "vkGetFenceFdKHR");
+		vk_error(res, "vkCreateSemaphore");
 		goto err;
 	}
 
@@ -1235,9 +1265,9 @@ void buffer_vk_destroy(struct device *device, struct buffer *buffer)
 	// TODO: destroy everything in reverse order
 }
 
-bool buffer_vk_fill(struct buffer *buffer, int frame_num)
+bool buffer_vk_fill(struct buffer *buffer, float anim_progress)
 {
-	((void) frame_num);
+	((void) anim_progress);
 	struct vk_image *img = (struct vk_image *)buffer;
 	struct vk_device *vk_dev = buffer->output->device->vk_device;
 	assert(vk_dev);
@@ -1252,6 +1282,7 @@ bool buffer_vk_fill(struct buffer *buffer, int frame_num)
 	// is not needed with the currnet architecture of the application
 	// since we only re-use buffers after kms is finished with them.
 	// Should probably work on that.
+	/*
 	VkImportSemaphoreFdInfoKHR isi = {0};
 	isi.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR;
 	isi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
@@ -1263,6 +1294,14 @@ bool buffer_vk_fill(struct buffer *buffer, int frame_num)
 	if (res != VK_SUCCESS) {
 		vk_error(res, "vkImportSemaphoreFdKHR");
 		return false;
+	}
+	*/
+
+	// debug
+	// we need this fence pretty much only to keep the validation layers
+	// happy (and for debugging i guess).
+	if(vkGetFenceStatus(vk_dev->dev, img->render_fence) != VK_SUCCESS) {
+		error("invalid fence status\n");
 	}
 
 	// reset the fence from the previous frame
@@ -1277,14 +1316,61 @@ bool buffer_vk_fill(struct buffer *buffer, int frame_num)
 	// - upon completion, it signals the render fence
 	VkPipelineStageFlags stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	VkSubmitInfo submission = {0};
+	submission.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submission.commandBufferCount = 1;
 	submission.pCommandBuffers = &img->cb;
-	submission.waitSemaphoreCount = 1;
-	submission.pWaitDstStageMask = &stage;
-	submission.pWaitSemaphores = &img->buffer_semaphore;
+	submission.pSignalSemaphores = &img->render_semaphore;
+	submission.signalSemaphoreCount = 1u;
+	// TODO
+	// submission.waitSemaphoreCount = 1;
+	// submission.pWaitDstStageMask = &stage;
+	// submission.pWaitSemaphores = &img->buffer_semaphore;
 	res = vkQueueSubmit(vk_dev->queue, 1, &submission, img->render_fence);
 	if (res != VK_SUCCESS) {
 		vk_error(res, "vkQueueSubmit");
+		return false;
+	}
+
+	if (img->buffer.render_fence_fd) {
+		close(img->buffer.render_fence_fd);
+	}
+
+	// NOTE: yes, we have to export the fence *every frame* since we pass
+	// ownership to the kernel when passing the fence fd.
+	// additionally, to export a fence as sync_fd, it
+	// "must be signaled, or have an associated fence signal operation
+	// pending execution", since sync_fd has copy transference semantics
+	// (see the vulkan spec for more details or importing/exporting
+	// fences). So it's important that we do this *after* we sumit
+	// our command buffer using this fence
+	// TODO: replace fd?
+	/*
+	VkFenceGetFdInfoKHR fdi = {0};
+	fdi.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
+	fdi.fence = img->render_fence;
+	fdi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+	res = vk_dev->api.getFenceFdKHR(vk_dev->dev, &fdi, &img->buffer.render_fence_fd);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkGetFenceFdKHR");
+		return false;
+	}
+	*/
+
+	VkSemaphoreGetFdInfoKHR fdi = {0};
+	fdi.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+	fdi.semaphore = img->render_semaphore;
+	fdi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+	res = vk_dev->api.getSemaphoreFdKHR(vk_dev->dev, &fdi, &img->buffer.render_fence_fd);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkGetSemaphoreFdKHR");
+		return false;
+	}
+
+	// TODO: don't stall...
+	// res = vkWaitForFences(vk_dev->dev, 1, &img->render_fence, 0, 1000 * 1000 * 1000); // 1s
+	res = vkWaitForFences(vk_dev->dev, 1, &img->render_fence, 0, UINT64_MAX);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkWaitForFences");
 		return false;
 	}
 

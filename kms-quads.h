@@ -507,6 +507,13 @@ void buffer_egl_destroy(struct device *device, struct buffer *buffer);
 void buffer_fill(struct buffer *buffer, float anim_progress);
 void buffer_egl_fill(struct buffer *buffer, float anim_progress);
 
+void vk_device_destroy(struct vk_device *device);
+struct vk_device *vk_device_create(struct device *device);
+bool output_vulkan_setup(struct output *output);
+struct buffer *buffer_vk_create(struct device *device, struct output *output);
+bool buffer_vk_fill(struct buffer *buffer, float anim_progress);
+void buffer_vk_destroy(struct device *device, struct buffer *buffer);
+
 /*
  * Adds an output's state to an atomic request, setting it up to display a
  * given buffer.

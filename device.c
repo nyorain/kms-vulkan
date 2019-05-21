@@ -295,12 +295,20 @@ static struct device *device_open(struct logind *session, const char *filename)
 	 */
 	if (!getenv("KMS_NO_GBM"))
 		ret->gbm_device = gbm_create_device(ret->kms_fd);
-	if (ret->gbm_device && !device_egl_setup(ret))
-		goto err_gbm;
+
+	const char* renderer = "software";
+	if (ret->gbm_device) {
+		renderer = "vulkan";
+		if (getenv("KMS_NO_VULKAN") || !vk_device_create(ret)) {
+			printf("Not using vulkan for rendering, trying gl\n");
+			renderer = "gl";
+			if (ret->gbm_device && !device_egl_setup(ret))
+				goto err_gbm;
+		}
+	}
 
 	printf("using device %s with %d outputs and %s rendering\n",
-	       filename, ret->num_outputs,
-	       (ret->gbm_device) ? "GPU" : "software");
+	       filename, ret->num_outputs, renderer);
 	return ret;
 
 err_gbm:
