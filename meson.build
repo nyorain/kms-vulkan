@@ -23,6 +23,7 @@ deps = [
   dependency('libdrm'),
   dependency('gbm'),
   dependency('egl'),
+  dependency('vulkan'),
 ]
 
 if get_option('glcore')
@@ -51,7 +52,7 @@ foreach shader : shaders_src
 	shaders += [header]
 endforeach
 
-sources = files('main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c')
+sources = files('main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c', 'vulkan.c')
 
 logind = dependency('lib' + get_option('logind-provider'), required: get_option('logind'), version: '>=237')
 

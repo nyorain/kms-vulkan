@@ -474,6 +474,9 @@ struct device {
 
 	/* whether the device reports timestamps relative to MONOTONIC clock */
 	bool monotonic_timestamps;
+
+	/* vulkan device */
+	struct vk_device *vk_device;
 };
 
 /*
@@ -540,6 +543,8 @@ edid_parse(const uint8_t *data, size_t length);
 
 bool
 gl_extension_supported(const char *haystack, const char *needle);
+
+int handle_to_fd(struct device *device, uint32_t gem_handle);
 
 static void
 fd_replace(int *target, int source)
