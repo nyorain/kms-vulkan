@@ -393,9 +393,9 @@ static void plane_formats_populate(struct output *output,
 		for (unsigned int m = 0; m < fmt_mod_blob->count_modifiers; m++) {
 			struct drm_format_modifier *mod = &blob_modifiers[m];
 
-			if ((m < mod->offset) || (m > mod->offset + 63))
+			if ((f < mod->offset) || (f > mod->offset + 63))
 				continue;
-			if (!(mod->formats & (1 << (m - mod->offset))))
+			if (!(mod->formats & (1 << (f - mod->offset))))
 				continue;
 
 			output->modifiers = realloc(output->modifiers,

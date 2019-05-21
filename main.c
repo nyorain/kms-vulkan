@@ -300,10 +300,15 @@ int main(int argc, char *argv[])
 		int j;
 
 		if (device->gbm_device) {
-			ret = output_egl_setup(output);
+			if (device->vk_device) {
+				ret = output_vulkan_setup(output);
+			} else {
+				ret = output_egl_setup(output);
+			}
+
 			if (!ret) {
 				fprintf(stderr,
-					"Couldn't set up EGL for output %s\n",
+					"Couldn't set up renderer for output %s\n",
 					output->name);
 				ret = 2;
 				goto out;
@@ -318,6 +323,8 @@ int main(int argc, char *argv[])
 			}
 		}
 	}
+
+	printf("finished initialization\n");
 
 	/* Our main rendering loop, which we spin forever. */
 	while (!shall_exit) {
