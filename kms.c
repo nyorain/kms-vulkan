@@ -840,3 +840,21 @@ int atomic_commit(struct device *device, drmModeAtomicReqPtr req,
 
 	return drmModeAtomicCommit(device->kms_fd, req, flags, device);
 }
+
+/* Create a dmabuf FD from a GEM handle. */
+int handle_to_fd(struct device *device, uint32_t gem_handle)
+{
+	struct drm_prime_handle prime = {
+		.handle = gem_handle,
+		.flags = DRM_RDWR | DRM_CLOEXEC,
+	};
+	int ret;
+
+	ret = ioctl(device->kms_fd, DRM_IOCTL_PRIME_HANDLE_TO_FD, &prime);
+	if (ret != 0) {
+		error("failed to export GEM handle %" PRIu32 " to FD\n", gem_handle);
+		return -1;
+	}
+
+	return prime.fd;
+}

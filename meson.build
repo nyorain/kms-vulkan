@@ -23,6 +23,7 @@ deps = [
   dependency('libdrm'),
   dependency('gbm'),
   dependency('egl'),
+  dependency('vulkan'),
 ]
 
 if get_option('glcore')
@@ -59,6 +60,7 @@ src = [
   'edid.c',
   'egl-gles.c',
   'kms.c',
+  'vulkan.c',
   shaders,
 ]
 executable('kms-quads', src,
