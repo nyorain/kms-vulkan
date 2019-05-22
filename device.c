@@ -367,7 +367,6 @@ struct device *device_create(void)
 
 	for (int i = 0; i < num_devices; i++) {
 		drmDevicePtr candidate = devices[i];
-		int fd;
 
 		/*
 		 * We need /dev/dri/cardN nodes for modesetting, not render
@@ -407,12 +406,12 @@ err:
 
 void device_destroy(struct device *device)
 {
-	struct output *output;
-
 	for (int i = 0; i < device->num_outputs; i++)
 		output_destroy(device->outputs[i]);
 	free(device->outputs);
 
+	if (device->vk_device)
+		vk_device_destroy(device->vk_device);
 	if (device->gbm_device)
 		gbm_device_destroy(device->gbm_device);
 
