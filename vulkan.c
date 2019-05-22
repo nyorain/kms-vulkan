@@ -31,7 +31,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
-#include <math.h>
 
 #include <vulkan.frag.h>
 #include <vulkan.vert.h>
@@ -93,7 +92,7 @@ struct vk_image {
 	// is signaled) and that isn't possible with a fence.
 	VkSemaphore buffer_semaphore; // signaled by kernal when image can be reused
 
-	// NOTE: vulkan can signal a semaphore and a fence when a command buffer
+	// vulkan can signal a semaphore and a fence when a command buffer
 	// has completed, so we can use either here without any significant
 	// difference (the exporting semantics are the same for both).
 	VkSemaphore render_semaphore; // signaled by vulkan when rendering finishes
@@ -241,7 +240,7 @@ static VkBool32 debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 		}
 	}
 
-	// NOTE: returning true not allowed by spec but helpful for debugging
+	// Returning true not allowed by spec but helpful for debugging
 	// makes function that caused the error return validation_failed
 	// error which we can detect
 	// return true;
@@ -362,7 +361,7 @@ void vk_device_destroy(struct vk_device *device)
 static bool init_pipeline(struct vk_device *dev)
 {
 	// render pass
-	// NOTE: we don't care about previous contents of the image since
+	// We don't care about previous contents of the image since
 	// we always render the full image. For incremental presentation you
 	// have to use LOAD_OP_STORE and a valid image layout.
 	VkAttachmentDescription attachment = {0};
@@ -524,8 +523,7 @@ static bool init_pipeline(struct vk_device *dev)
 	pipe_info.pDynamicState = &dynamic;
 	pipe_info.pVertexInputState = &vertex;
 
-	// NOTE: could use a cache here for faster loading
-	// store it somewhere like $XDG_CACHE_HOME/wlroots/vk_pipe_cache
+	// could use a cache here for faster loading
 	VkPipelineCache cache = VK_NULL_HANDLE;
 	res = vkCreateGraphicsPipelines(dev->dev, cache, 1, &pipe_info,
 		NULL, &dev->pipe);
@@ -648,8 +646,6 @@ struct vk_device *vk_device_create(struct device *device)
 	drmDevicePtr drm_dev;
 	drmGetDevice(device->kms_fd, &drm_dev);
 	if(drm_dev->bustype != DRM_BUS_PCI) {
-		// NOTE: we could check that/gather the pci information
-		// on device creation
 		error("Given device isn't a pci device\n");
 		goto error;
 	}
@@ -958,7 +954,7 @@ bool output_vulkan_setup(struct output *output)
 		smods[smod_count++] = mod;
 		debug("Vulkan and KMS support modifier %lu\n", mod);
 
-		// NOTE: we could check/store ifmtp.maxExtent but it should
+		// we could check/store ifmtp.maxExtent but it should
 		// be enough. Otherwise the gpu is connected to an output
 		// it can't power on full resolution
 	}
@@ -1128,7 +1124,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 
 		VkMemoryAllocateInfo memi = {0};
 		memi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		// NOTE: apparently drivers are allowed to return 0 as memory
+		// apparently drivers are allowed to return 0 as memory
 		// requirements size for a given plane. But allocation
 		// memory of size 0 isn't allowed.
 		memi.allocationSize = (memr.memoryRequirements.size > 0) ?
@@ -1227,7 +1223,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
 	mai.allocationSize = bmr.size;
 
-	// NOTE: the vulkan spec guarantees that non-sparse buffers can
+	// the vulkan spec guarantees that non-sparse buffers can
 	// always be allocated on host visible, coherent memory, i.e.
 	// we must find a valid memory type.
 	int mem_type = find_mem_type(vk_dev->phdev,
@@ -1293,7 +1289,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	vkBeginCommandBuffer(img->cb, &begin_info);
 
-	// NOTE: we don't need a pipeline barrier for our host write
+	// we don't need a pipeline barrier for our host write
 	// to the mapped ubo here (that happens every frame) because
 	// vkQueueSubmit implicitly inserts such a dependency
 
@@ -1322,13 +1318,11 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	barrier.subresourceRange.layerCount = 1;
 	barrier.subresourceRange.levelCount = 1;
 
-	// NOTE: not completely sure about the stages for image
-	// ownership transfer
+	// TODO: not completely sure about the stages for image ownership transfer
 	vkCmdPipelineBarrier(img->cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL,
 		0, NULL, 1, &barrier);
 
-	// render pass
 	// Renderpass currently specifies don't care as loadOp (since we
 	// render the full framebuffer anyways), so we don't need
 	// clear values
@@ -1337,6 +1331,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	// clear_value.color.float32[1] = 0.1f;
 	// clear_value.color.float32[2] = 0.1f;
 	// clear_value.color.float32[3] = 1.f;
+
 	VkRect2D rect = {{0, 0}, {width, height}};
 
 	VkRenderPassBeginInfo rp_info = {0};
@@ -1478,14 +1473,13 @@ void buffer_vk_destroy(struct device *device, struct buffer *buffer)
 
 bool buffer_vk_fill(struct buffer *buffer, float anim_progress)
 {
-	((void) anim_progress);
 	struct vk_image *img = (struct vk_image *)buffer;
 	struct vk_device *vk_dev = buffer->output->device->vk_device;
 	assert(vk_dev);
 	VkResult res;
 
 	// update frame number in mapped memory
-	*(float*)img->ubo_map = ((float)frame_num) / NUM_ANIM_FRAMES;
+	*(float*)img->ubo_map = anim_progress;
 
 	// make the validation layers happy and assert that the command
 	// buffer really has finished. Otherwise it's an error in the drm
@@ -1515,7 +1509,7 @@ bool buffer_vk_fill(struct buffer *buffer, float anim_progress)
 	submission.pCommandBuffers = &img->cb;
 
 	if (buffer->output->explicit_fencing) {
-		// NOTE: we don't have to recreate it every frame but there
+		// we don't have to recreate it every frame but there
 		// are currently validation layer errors for sync_fd handles
 		// (don't reset payload on export) so we recreate the
 		// semaphore in every frame. Shouldn't hurt performance.
@@ -1541,7 +1535,7 @@ bool buffer_vk_fill(struct buffer *buffer, float anim_progress)
 		// for sync_fd semaphores) means that after the next wait operation,
 		// the semaphore is reset to its prior state, i.e. we can import
 		// a new semaphore next frame.
-		// NOTE: as mentioned in the egl backend, the whole kms_fence_fd
+		// As mentioned in the egl backend, the whole kms_fence_fd
 		// is not needed with the current architecture of the application
 		// since we only re-use buffers after kms is finished with them.
 		// In real applications it might be useful though to use it.
@@ -1576,7 +1570,7 @@ bool buffer_vk_fill(struct buffer *buffer, float anim_progress)
 			close(img->buffer.render_fence_fd);
 		}
 
-		// NOTE: we have to export the fence/semaphore *every frame* since
+		// We have to export the fence/semaphore *every frame* since
 		// we pass ownership to the kernel when passing the sync_fd.
 		// additionally, to export a fence as sync_fd, it
 		// "must be signaled, or have an associated fence signal operation

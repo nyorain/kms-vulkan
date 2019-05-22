@@ -10,6 +10,7 @@ layout(set = 0, binding = 0) uniform UBO {
 const float pi = 3.1415926535897932;
 
 void main() {
+	// rotating color wheel
 	float t = 2 * pi * ubo.t;
 	vec2 itp = 0.5 + mat2(cos(t), -sin(t), sin(t), cos(t)) * (0.5 - uv); 
 	vec3 col = vec3(itp.x, itp.y, 1 - itp.x * itp.y);
