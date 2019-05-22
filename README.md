@@ -105,12 +105,12 @@ the original project name) while the vulkan renderer currently shows a
 smoothly animated color wheel. This way you can know which renderer
 is used, but it will obviously also be logged.
 
-Vulkan can only import dma buffer images if its modifier is known. It additionally
-needs a couple of extension. At the time of writing (May 2019), AMD has
-no support for drm format modifiers at all, so vulkan importing won't
+Vulkan can only import dma buffer images if their format modifier is known.
+It additionally needs a couple of extension. At the time of writing (May 2019),
+AMD has no support for drm format modifiers at all, so vulkan importing won't
 work on AMD hardware (*yet, hopefully*).
-The required `VK_EXT_image_drm_format_modifier`
-extension is not merged on mesa upstream yet, but there exists a [merge
+Support for the required `VK_EXT_image_drm_format_modifier`
+extension is not merged into mesa upstream yet, but there exists a [merge
 request](https://gitlab.freedesktop.org/mesa/mesa/merge_requests/515) for
 anv, the intel vulkan driver. The application was tested and verified
 to work with that implementation on an intel gpu.
@@ -124,7 +124,7 @@ for any desktop vulkan driver though so we currently fall back to using
 extension is supported on any driver, a patch will be trivial.
 
 As you can see, the whole vulkan support for KMS is still rather experimental
-and not widely supported, I hope to keep this application updated as more
+and not widely supported. I hope to keep this application updated as more
 drivers receive correct upstream support for all the required extensions.
 
 ## What is atomic modesetting?
