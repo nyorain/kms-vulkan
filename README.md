@@ -1,5 +1,13 @@
 # kms-quads: a simple KMS example
 
+**NOTE** This code is a fork of [kms-quads](https://gitlab.freedesktop.org/daniels/kms-quads),
+follow the link for more information.
+It was developed by Daniel Stone, [Collabora](https://www.collabora.com)
+and [DAQRI](https://www.daqri.com). This fork adds **experimental** vulkan support,
+see the vulkan section below.
+
+---
+
 kms-quads is a simple and well-explained example of how to use the Linux
 kernel's KMS API to drive graphical displays. It is built with the Meson build
 system:
@@ -27,6 +35,17 @@ send an initial atomic modesetting request to show the initial image on all
 outputs. After this, each output will independently run its own repaint loop
 displaying a timed animation.
 
+**NOTE: by default, kms-quads will run indefinietly without any method
+of switching the vt. Unless you would like to be stuck with the program,
+you probably rather want to run something like this (SIGINT is handled
+by the program to correctly clean up):**
+```shell
+  # ./build/kms-quads & (sleep 10; pkill -INT kms-quads)
+```
+
+Afterwards you will be able to switch the vt. If the program crashes,
+you might in bad cases also be stuck without any method (known to me)
+of switching back to your original VT, requiring a restart.
 
 ## What is KMS?
 
@@ -66,6 +85,43 @@ There are a number of presentations available on how KMS is built, including
 Brezillon](https://events.static.linuxfound.org/sites/events/files/slides/brezillon-drm-kms.pdf),
 which is primarily focused on the kernel implementation.
 
+## Vulkan
+
+This fork adds vulkan support, showing how to use the `VK_EXT_image_drm_format_modifier`
+extension to import gbm buffer objects into vulkan for rendering. With
+this, you can theoretically build a vulkan kms app (like a wayland compositor)
+that has no need for EGL or GL at all.
+Most of the files (except vulkan.c and its shaders) are only
+minimally changed to allow using vulkan. The application currently
+tries to create a vulkan renderer but if some extensions are missing
+or if the drm/kms driver does not support modifiers, it will fall
+back the previously implemented EGL or dumb buffer rendering backend.
+The EGL/dumb buffer renderer show simple moving colored quads (hence
+the original project name) while the vulkan renderer currently shows a
+smoothly animated color wheel. This way you can know which renderer
+is used, but it will obviously also be logged.
+
+Vulkan can only import dma buffer images if its modifier is known. It additionally
+needs a couple of extension. At the time of writing (May 2019), AMD has
+no support for drm format modifiers at all, so vulkan importing won't
+work on AMD hardware (*yet, hopefully*).
+The required `VK_EXT_image_drm_format_modifier`
+extension is not merged on mesa upstream yet, but there exists a [merge
+request](https://gitlab.freedesktop.org/mesa/mesa/merge_requests/515) for
+anv, the intel vulkan driver. The application was tested and verified
+to work with that implementation on an intel gpu.
+
+**Important:** Theoretically, the `VK_EXT_queue_family_foreign` extension
+is needed as well. The vulkan standard states that `VK_QUEUE_FAMILY_FOREIGN_EXT`
+has to be used to transfer ownership of an image to a non-vulkan image
+user (the drm subsystem). There is no (up-to-date) mesa patch for this extension
+for any desktop vulkan driver though so we currently fall back to using
+`VK_QUEUE_FAMILY_EXTERNAL`, but this **isn't guaranteed to work**! Once the
+extension is supported on any driver, a patch will be trivial.
+
+As you can see, the whole vulkan support for KMS is still rather experimental
+and not widely supported, I hope to keep this application updated as more
+drivers receive correct upstream support for all the required extensions.
 
 ## What is atomic modesetting?
 
@@ -134,14 +190,17 @@ the `gbm_bo`s it allocated, with no way to keep them alive for longer.
 
 Directly allocating `gbm_bo`s requires more typing, but offers more control.
 
-
 ## Contact
 
-This code has been authored by [Collabora](https://www.collabora.com)
+The original code has been authored by [Collabora](https://www.collabora.com)
 and [DAQRI](https://www.daqri.com).
 
 Issues and merge requests are welcome on this project, and can be filed [in
-GitLab](https://gitlab.freedesktop.org/daniels/kms-quads).
+freedesktops GitLab](https://gitlab.freedesktop.org/nyorain/kms-vulkan) or
+[on Github](https://github.com/nyorain/kms-vulkan).
+The original code (kms-quads) is hosted on [freedesktops
+Gitlab](https://gitlab.freedesktop.org/daniels/kms-quads) and
+welcomes all issues and merge requests as well.
 
 As this project is hosted on freedesktop.org, it follows the [freedesktop.org
 Code of Conduct](https://www.freedesktop.org/wiki/CodeOfConduct). Please be
