@@ -31,20 +31,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <inttypes.h>
+#include <math.h>
 
 #include <vulkan.frag.h>
 #include <vulkan.vert.h>
 
-// TODO: use srgb format?
 // This corresponds to the XRGB drm format.
 // The egl format hardcodes this format so we can probably too.
 // It's guaranteed to be supported by the vulkan spec for everything
-// we need.
-static const VkFormat format = VK_FORMAT_B8G8R8A8_UNORM;
+// we need. SRGB is the correct choice here, as always. You'd see
+// that when rendering a texture.
+static const VkFormat format = VK_FORMAT_B8G8R8A8_SRGB;
 
 struct vk_device {
 	VkInstance instance;
 	VkDebugUtilsMessengerEXT messenger;
+
+	// whether the required extensions for explicit fencing are supported
+	bool explicit_fencing;
 
 	struct {
 		PFN_vkCreateDebugUtilsMessengerEXT createDebugUtilsMessengerEXT;
@@ -62,10 +66,13 @@ struct vk_device {
 	VkQueue queue;
 
 	// pipeline
+	// TODO: use and fill ubo
+	VkDescriptorSetLayout ds_layout;
 	VkRenderPass rp;
 	VkPipelineLayout pipe_layout;
 	VkPipeline pipe;
 	VkCommandPool command_pool;
+	VkDescriptorPool ds_pool;
 };
 
 struct vk_image {
@@ -76,9 +83,26 @@ struct vk_image {
 	VkImageView image_view;
 	VkCommandBuffer cb;
 	VkFramebuffer fb;
+	bool first;
 
+	VkBuffer ubo;
+	VkDeviceMemory ubo_mem;
+	void *ubo_map;
+	VkDescriptorSet ds;
+
+	// We have to use a semaphore here since we want to "wait for it
+	// on the device" (i.e. only start rendering when the semaphore
+	// is signaled) and that isn't possible with a fence.
 	VkSemaphore buffer_semaphore; // signaled by kernal when image can be reused
+
+	// NOTE: vulkan can signal a semaphore and a fence when a command buffer
+	// has completed, so we can use either here without any significant
+	// difference (the exporting semantics are the same for both).
 	VkSemaphore render_semaphore; // signaled by vulkan when rendering finishes
+
+	// We don't need this theoretically. But the validation layers
+	// are happy if we signal them via this fence that execution
+	// has finished.
 	VkFence render_fence; // signaled by vulkan when rendering finishes
 };
 
@@ -197,8 +221,8 @@ static VkBool32 debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 			break;
 	}
 
-	debug("%s: %s (%s)\n", importance, debug_data->pMessage,
-		debug_data->pMessageIdName);
+	debug("%s: %s (%s, %d)\n", importance, debug_data->pMessage,
+		debug_data->pMessageIdName, debug_data->messageIdNumber);
 	if (debug_data->queueLabelCount > 0) {
 		const char *name = debug_data->pQueueLabels[0].pLabelName;
 		if (name) {
@@ -219,7 +243,7 @@ static VkBool32 debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
 		}
 	}
 
-	// TODO: returning true not allowed by spec but helpful for debugging
+	// NOTE: returning true not allowed by spec but helpful for debugging
 	// makes function that caused the error return validation_failed
 	// error which we can detect
 	// return true;
@@ -306,6 +330,21 @@ bool match(drmPciBusInfoPtr pci_bus_info, VkPhysicalDevice phdev,
 
 void vk_device_destroy(struct vk_device *device)
 {
+	if (device->pipe) {
+		vkDestroyPipeline(device->dev, device->pipe, NULL);
+	}
+	if (device->rp) {
+		vkDestroyRenderPass(device->dev, device->rp, NULL);
+	}
+	if (device->pipe_layout) {
+		vkDestroyPipelineLayout(device->dev, device->pipe_layout, NULL);
+	}
+	if (device->command_pool) {
+		vkDestroyCommandPool(device->dev, device->command_pool, NULL);
+	}
+	if (device->ds_pool) {
+		vkDestroyDescriptorPool(device->dev, device->ds_pool, NULL);
+	}
 	if (device->dev) {
 		vkDestroyDevice(device->dev, NULL);
 	}
@@ -329,8 +368,8 @@ static bool init_pipeline(struct vk_device *dev)
 	VkAttachmentDescription attachment = {0};
 	attachment.format = format;
 	attachment.samples = VK_SAMPLE_COUNT_1_BIT;
-	// attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-	attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	attachment.loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+	// attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
 	attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
 	attachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
 	attachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -348,9 +387,9 @@ static bool init_pipeline(struct vk_device *dev)
 	subpass.colorAttachmentCount = 1;
 	subpass.pColorAttachments = &color_ref;
 
-	// Note how we don't specify any subpass dependencies. The transfer
-	// of an image to an external queue (i.e. transfer logical ownership
-	// of the image from the vulkan driver to drm) can't be represented
+	// Note how we don't specify any (external) subpass dependencies.
+	// The transfer of an image to an external queue (i.e. transfer logical
+	// ownership of the image from the vulkan driver to drm) can't be represented
 	// as a subpass dependency, so we have to transition the image
 	// after and before a renderpass manually anyways.
 	VkRenderPassCreateInfo rp_info = {0};
@@ -502,11 +541,10 @@ struct vk_device *vk_device_create(struct device *device)
 		return NULL;
 	}
 
-	// TODO: remove vla
-	VkExtensionProperties avail_exts[avail_extc + 1];
-	res = vkEnumerateInstanceExtensionProperties(NULL, &avail_extc,
-		avail_exts);
+	VkExtensionProperties *avail_exts = calloc(avail_extc, sizeof(*avail_exts));
+	res = vkEnumerateInstanceExtensionProperties(NULL, &avail_extc, avail_exts);
 	if (res != VK_SUCCESS) {
+		free(avail_exts);
 		vk_error(res, "Could not enumerate instance extensions (2)");
 		return NULL;
 	}
@@ -524,8 +562,10 @@ struct vk_device *vk_device_create(struct device *device)
 	uint32_t enable_extc = 0;
 	if (has_extension(avail_exts, avail_extc, req)) {
 		enable_exts = &req;
-		enable_exts[enable_extc++] = req;
+		enable_extc++;
 	}
+
+	free(avail_exts);
 
 	VkApplicationInfo application_info = {0};
 	application_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -588,6 +628,16 @@ struct vk_device *vk_device_create(struct device *device)
 		}
 	}
 
+	// get pci information of device
+	drmDevicePtr drm_dev;
+	drmGetDevice(device->kms_fd, &drm_dev);
+	if(drm_dev->bustype != DRM_BUS_PCI) {
+		// NOTE: we could check that/gather the pci information
+		// on device creation
+		error("Given device isn't a pci device\n");
+		goto error;
+	}
+
 	// enumerate physical devices to find the one matching the given
 	// gbm device.
 	uint32_t num_phdevs;
@@ -600,17 +650,8 @@ struct vk_device *vk_device_create(struct device *device)
 	VkPhysicalDevice *phdevs = calloc(num_phdevs, sizeof(*phdevs));
 	res = vkEnumeratePhysicalDevices(vk_dev->instance, &num_phdevs, phdevs);
 	if (res != VK_SUCCESS || num_phdevs == 0) {
+		free(phdevs);
 		vk_error(res, "Could not retrieve physical device");
-		goto error;
-	}
-
-	// get pci information of device
-	drmDevicePtr drm_dev;
-	drmGetDevice(device->kms_fd, &drm_dev);
-	if(drm_dev->bustype != DRM_BUS_PCI) {
-		// NOTE: we could check that/gather the pci information
-		// on device creation
-		error("Given device isn't a pci device\n");
 		goto error;
 	}
 
@@ -629,6 +670,7 @@ struct vk_device *vk_device_create(struct device *device)
 		}
 	}
 
+	free(phdevs);
 	if (phdev == VK_NULL_HANDLE) {
 		error("Can't find vulkan physical device for drm dev\n");
 		goto error;
@@ -641,10 +683,10 @@ struct vk_device *vk_device_create(struct device *device)
 	vk_dev->phdev = phdev;
 
 	// query extensions
-	const char* dev_exts[] = {
-		VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME,
-		VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+	const char* dev_exts[8];
+	uint32_t dev_extc = 0;
 
+	const char* mem_exts[] = {
 		VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME,
 		VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
 		VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
@@ -657,11 +699,34 @@ struct vk_device *vk_device_create(struct device *device)
 		// VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
 	};
 
-	for (unsigned i = 0u; i < ARRAY_LENGTH(dev_exts); ++i) {
-		if (!has_extension(phdev_exts, phdev_extc, dev_exts[i])) {
+	for (unsigned i = 0u; i < ARRAY_LENGTH(mem_exts); ++i) {
+		if (!has_extension(phdev_exts, phdev_extc, mem_exts[i])) {
 			error("Physical device doesn't supported required extension: %s\n",
-				dev_exts[i]);
+				mem_exts[i]);
 			goto error;
+		} else {
+			dev_exts[dev_extc++] = mem_exts[i];
+		}
+	}
+
+	// explicit fencing extensions
+	// we currently only import/export semaphores
+	vk_dev->explicit_fencing = true;
+	const char* sync_exts[] = {
+		// VK_KHR_EXTERNAL_FENCE_FD_EXTENSION_NAME,
+		VK_KHR_EXTERNAL_SEMAPHORE_FD_EXTENSION_NAME,
+	};
+
+	for (unsigned i = 0u; i < ARRAY_LENGTH(sync_exts); ++i) {
+		if (!has_extension(phdev_exts, phdev_extc, sync_exts[i])) {
+			error("Physical device doesn't supported extension %s, which "
+				"is required for explicit fencing. Will disable explicit "
+				"fencing but that is a suboptimal workaround",
+				dev_exts[i]);
+			vk_dev->explicit_fencing = false;
+			break;
+		} else {
+			dev_exts[dev_extc++] = sync_exts[i];
 		}
 	}
 
@@ -697,7 +762,7 @@ struct vk_device *vk_device_create(struct device *device)
 	dev_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 	dev_info.queueCreateInfoCount = 1;
 	dev_info.pQueueCreateInfos = &qinfo;
-	dev_info.enabledExtensionCount = ARRAY_LENGTH(dev_exts);
+	dev_info.enabledExtensionCount = dev_extc;
 	dev_info.ppEnabledExtensionNames = dev_exts;
 
 	res = vkCreateDevice(phdev, &dev_info, NULL, &vk_dev->dev);
@@ -707,33 +772,6 @@ struct vk_device *vk_device_create(struct device *device)
 	}
 
 	vkGetDeviceQueue(vk_dev->dev, vk_dev->queue_family, 0, &vk_dev->queue);
-	vk_dev->api.getMemoryFdPropertiesKHR = (PFN_vkGetMemoryFdPropertiesKHR)
-		vkGetDeviceProcAddr(vk_dev->dev, "vkGetMemoryFdPropertiesKHR");
-	if (!vk_dev->api.getMemoryFdPropertiesKHR) {
-		error("Failed to retrieve vkGetMemoryFdPropertiesKHR\n");
-		goto error;
-	}
-
-	vk_dev->api.getFenceFdKHR = (PFN_vkGetFenceFdKHR)
-		vkGetDeviceProcAddr(vk_dev->dev, "vkGetFenceFdKHR");
-	if (!vk_dev->api.getFenceFdKHR) {
-		error("Failed to retrieve vkGetFenceFdKHR\n");
-		goto error;
-	}
-
-	vk_dev->api.getSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)
-		vkGetDeviceProcAddr(vk_dev->dev, "vkGetSemaphoreFdKHR");
-	if (!vk_dev->api.getSemaphoreFdKHR) {
-		error("Failed to retrieve vkGetSemaphoreFdKHR\n");
-		goto error;
-	}
-
-	vk_dev->api.importSemaphoreFdKHR = (PFN_vkImportSemaphoreFdKHR)
-		vkGetDeviceProcAddr(vk_dev->dev, "vkImportSemaphoreFdKHR");
-	if (!vk_dev->api.importSemaphoreFdKHR) {
-		error("Failed to retrieve vkImportSemaphoreFdKHR\n");
-		goto error;
-	}
 
 	// command pool
 	VkCommandPoolCreateInfo cpi = {0};
@@ -746,43 +784,77 @@ struct vk_device *vk_device_create(struct device *device)
 		goto error;
 	}
 
-	// TODO: we could relax those requirements when we don't force explicit
-	// syncing (via manual waiting).
+	if (vk_dev->explicit_fencing) {
+		// semaphore import/export support
+		// we import kms_fence_fd as semaphore and add that as wait semaphore
+		// to a render submission so that we only render a buffer when
+		// kms signals that it's finished with it.
+		// we alos export the semaphore for our render submission as sync_fd
+		// and pass that as render_fence_fd to the kernel, signaling
+		// that the buffer can only be used when that semaphore is signaled,
+		// i.e. we are finished with rendering and all barriers.
+		VkPhysicalDeviceExternalSemaphoreInfo esi = {0};
+		esi.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO;
+		esi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
 
-	// semaphore import/export support
-	// we import kms_fence_fd as semaphore and add that as wait semaphore
-	// to a render submission so that we only render a buffer when
-	// kms signals that it's finished with it.
-	VkPhysicalDeviceExternalSemaphoreInfo esi = {0};
-	esi.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_SEMAPHORE_INFO;
-	esi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+		VkExternalSemaphoreProperties esp = {0};
+		esp.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES;
+		vkGetPhysicalDeviceExternalSemaphoreProperties(phdev, &esi, &esp);
 
-	VkExternalSemaphoreProperties esp = {0};
-	esp.sType = VK_STRUCTURE_TYPE_EXTERNAL_SEMAPHORE_PROPERTIES;
-	vkGetPhysicalDeviceExternalSemaphoreProperties(phdev, &esi, &esp);
+		if((esp.externalSemaphoreFeatures &
+				VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT) == 0) {
+			error("Vulkan can't import sync_fd semaphores");
+			goto error;
+		}
 
-	if((esp.externalSemaphoreFeatures &
-			VK_EXTERNAL_SEMAPHORE_FEATURE_IMPORTABLE_BIT) == 0) {
-		error("Vulkan can't import sync_fd semaphores");
-		goto error;
+		// we currently don't export/import fences
+		/*
+		VkPhysicalDeviceExternalFenceInfo efi = {0};
+		efi.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO;
+		efi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+
+		VkExternalFenceProperties efp = {0};
+		efp.sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES;
+		vkGetPhysicalDeviceExternalFenceProperties(phdev, &efi, &efp);
+
+		if((efp.externalFenceFeatures &
+				VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT) == 0) {
+			error("Vulkan can't export sync_fd fences");
+			goto error;
+		}
+
+		vk_dev->api.getFenceFdKHR = (PFN_vkGetFenceFdKHR)
+			vkGetDeviceProcAddr(vk_dev->dev, "vkGetFenceFdKHR");
+		if (!vk_dev->api.getFenceFdKHR) {
+			error("Failed to retrieve vkGetFenceFdKHR\n");
+			vk_dev->explicit_fencing = false;
+		}
+		*/
+
+		vk_dev->api.getSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)
+			vkGetDeviceProcAddr(vk_dev->dev, "vkGetSemaphoreFdKHR");
+		if (!vk_dev->api.getSemaphoreFdKHR) {
+			error("Failed to retrieve vkGetSemaphoreFdKHR\n");
+			vk_dev->explicit_fencing = false;
+		}
+
+		vk_dev->api.importSemaphoreFdKHR = (PFN_vkImportSemaphoreFdKHR)
+			vkGetDeviceProcAddr(vk_dev->dev, "vkImportSemaphoreFdKHR");
+		if (!vk_dev->api.importSemaphoreFdKHR) {
+			error("Failed to retrieve vkImportSemaphoreFdKHR\n");
+			vk_dev->explicit_fencing = false;
+		}
+
+		if (!vk_dev->explicit_fencing) {
+			printf("Disabling explicit fencing since not all required "
+				"functions could be loaded. Suboptimal workaround\n");
+		}
 	}
 
-	// fence export support
-	// we export the fence for our render submission as sync_fd
-	// and pass that as render_fence_fd to the kernel, signaling
-	// that the buffer can only be used when that fence is signaled,
-	// i.e. we are finished with rendering and all barriers.
-	VkPhysicalDeviceExternalFenceInfo efi = {0};
-	efi.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO;
-	efi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
-
-	VkExternalFenceProperties efp = {0};
-	efp.sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES;
-	vkGetPhysicalDeviceExternalFenceProperties(phdev, &efi, &efp);
-
-	if((efp.externalFenceFeatures &
-			VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT) == 0) {
-		error("Vulkan can't export sync_fd fences");
+	vk_dev->api.getMemoryFdPropertiesKHR = (PFN_vkGetMemoryFdPropertiesKHR)
+		vkGetDeviceProcAddr(vk_dev->dev, "vkGetMemoryFdPropertiesKHR");
+	if (!vk_dev->api.getMemoryFdPropertiesKHR) {
+		error("Failed to retrieve required vkGetMemoryFdPropertiesKHR\n");
 		goto error;
 	}
 
@@ -805,14 +877,15 @@ bool output_vulkan_setup(struct output *output)
 	assert(vk_dev);
 	VkResult res;
 
-	// TODO: i guess we could make it work without explicit fencing
-	// if we just stall the gpu before submitting and only re-use images
-	// when they are ready to be re-used.
+	// vulkan builds upon explicit fencing. The workaround with simply
+	// waiting until rendering has finished in case of no explicit
+	// fencing is suboptimal
 	if (!output->explicit_fencing) {
-		error("Vulkan requires explicit fencing, output doesn't support it");
-		return false;
+		printf("Vulkan renderer: drm doesn't support explicit fencing "
+			"that means the renderer has to stall (bad)\n");
 	}
 
+	output->explicit_fencing &= vk_dev->explicit_fencing;
 	if (output->num_modifiers == 0) {
 		error("Output doesn't support any modifiers, vulkan requires modifiers");
 		return false;
@@ -868,11 +941,6 @@ bool output_vulkan_setup(struct output *output)
 
 		// we need dmabufs with the given format and modifier to be importable
 		// otherwise we can't use the modifier
-		// if ((efmtp.externalMemoryProperties.compatibleHandleTypes &
-		// 		VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT) == 0) {
-		// 	debug("KMS modifier %lu not supported by vulkan (1)\n", mod);
-		// 	continue;
-		// }
 		if ((efmtp.externalMemoryProperties.externalMemoryFeatures &
 				VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT) == 0) {
 			debug("KMS modifier %lu not supported by vulkan (2)\n", mod);
@@ -882,8 +950,9 @@ bool output_vulkan_setup(struct output *output)
 		smods[smod_count++] = mod;
 		debug("Vulkan and KMS support modifier %lu\n", mod);
 
-		// TODO: query and check basic image properties such as
-		// maxExtent. Stored in ifmtp
+		// NOTE: we could check/store ifmtp.maxExtent but it should
+		// be enough. Otherwise the gpu is connected to an output
+		// it can't power on full resolution
 	}
 
 	if (smod_count == 0) {
@@ -908,6 +977,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	VkResult res;
 
 	// fill buffer info
+	img->first = true;
 	img->buffer.output = output;
 	img->buffer.render_fence_fd = -1;
 	img->buffer.kms_fence_fd = -1;
@@ -969,8 +1039,8 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 
 	// TODO: could all planes point to the same dma_buf object?
 	// we can compare that via the SYS_kcmp syscall on linux,
-	// is that valid? In that case we can get away with 1 memory
-	// despite multiple planes i guess
+	// is that valid here? In that case we can get away with 1 memory
+	// object despite multiple planes i guess
 	bool disjoint = (num_planes > 1);
 	debug("plane count: %d\n", num_planes);
 
@@ -1049,7 +1119,11 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 
 		VkMemoryAllocateInfo memi = {0};
 		memi.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-		memi.allocationSize = memr.memoryRequirements.size;
+		// NOTE: apparently drivers are allowed to return 0 as memory
+		// requirements size for a given plane. But allocation
+		// memory of size 0 isn't allowed.
+		memi.allocationSize = (memr.memoryRequirements.size > 0) ?
+			memr.memoryRequirements.size : 1;
 		memi.memoryTypeIndex = mem;
 
 		VkImportMemoryFdInfoKHR importi = {0};
@@ -1173,11 +1247,11 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	// Renderpass currently specifies don't care as loadOp (since we
 	// render the full framebuffer anyways), so we don't need
 	// clear values
-	VkClearValue clear_value;
-	clear_value.color.float32[0] = 0.1f;
-	clear_value.color.float32[1] = 0.1f;
-	clear_value.color.float32[2] = 0.1f;
-	clear_value.color.float32[3] = 1.f;
+	// VkClearValue clear_value;
+	// clear_value.color.float32[0] = 0.1f;
+	// clear_value.color.float32[1] = 0.1f;
+	// clear_value.color.float32[2] = 0.1f;
+	// clear_value.color.float32[3] = 1.f;
 	VkRect2D rect = {{0, 0}, {width, height}};
 
 	VkRenderPassBeginInfo rp_info = {0};
@@ -1185,8 +1259,8 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	rp_info.renderArea = rect;
 	rp_info.renderPass = vk_dev->rp;
 	rp_info.framebuffer = img->fb;
-	rp_info.clearValueCount = 1;
-	rp_info.pClearValues = &clear_value;
+	// rp_info.clearValueCount = 1;
+	// rp_info.pClearValues = &clear_value;
 	vkCmdBeginRenderPass(img->cb, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
 
 	VkViewport vp = {0.f, 0.f, (float) width, (float) height, 0.f, 1.f};
@@ -1220,14 +1294,14 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 		goto err;
 	}
 
-	// create render fence, export it as syncfile to buffer->render_fence_fd
-	VkExportFenceCreateInfo efi = {0};
-	efi.sType = VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO;
-	efi.handleTypes = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+	// create render fence/semaphore
+	// VkExportFenceCreateInfo efi = {0};
+	// efi.sType = VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO;
+	// efi.handleTypes = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
 
 	VkFenceCreateInfo fence_info = {0};
 	fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-	fence_info.pNext = &efi;
+	// fence_info.pNext = &efi;
 	res = vkCreateFence(vk_dev->dev, &fence_info, NULL, &img->render_fence);
 	if (res != VK_SUCCESS) {
 		vk_error(res, "vkCreateFence");
@@ -1262,7 +1336,55 @@ err:
 void buffer_vk_destroy(struct device *device, struct buffer *buffer)
 {
 	struct vk_image *img = (struct vk_image *)buffer;
-	// TODO: destroy everything in reverse order
+	struct vk_device *vk_dev = device->vk_device;
+	if (!vk_dev) {
+		error("Expected vk_device in device");
+		return;
+	}
+
+	VkResult res;
+	if (img->render_fence) {
+		if (!img->first) {
+			res = vkWaitForFences(vk_dev->dev, 1, &img->render_fence, false, UINT64_MAX);
+			if (res != VK_SUCCESS) {
+				vk_error(res, "vkWaitForFences");
+			}
+		}
+
+		vkDestroyFence(vk_dev->dev, img->render_fence, NULL);
+	}
+
+	// no need to free command buffer or descriptor sets, we will destroy
+	// the pools and implicitly free them
+
+	if (img->buffer_semaphore) {
+		vkDestroySemaphore(vk_dev->dev, img->buffer_semaphore, NULL);
+	}
+	if (img->render_semaphore) {
+		vkDestroySemaphore(vk_dev->dev, img->render_semaphore, NULL);
+	}
+	if (img->fb) {
+		vkDestroyFramebuffer(vk_dev->dev, img->fb, NULL);
+	}
+	if (img->image_view) {
+		vkDestroyImageView(vk_dev->dev, img->image_view, NULL);
+	}
+	if (img->image) {
+		vkDestroyImage(vk_dev->dev, img->image, NULL);
+	}
+
+	for (unsigned i = 0u; i < 4u; ++i) {
+		if (img->memories[i]) {
+			// TODO: this currently gives a segmentation fault in
+			// the validation layers, probably an error there
+			// so not doing it here is the cause for the validation layers
+			// to complain about not destroyed memory at the moment
+			// vkFreeMemory(vk_dev->dev, img->memories[i], NULL);
+		}
+	}
+	if (img->buffer.gbm.bo) {
+		gbm_bo_destroy(img->buffer.gbm.bo);
+	}
 }
 
 bool buffer_vk_fill(struct buffer *buffer, int frame_num)
@@ -1273,105 +1395,132 @@ bool buffer_vk_fill(struct buffer *buffer, int frame_num)
 	assert(vk_dev);
 	VkResult res;
 
-	// importing semaphore transfers ownership to vulkan
-	// importing it as temporary (which is btw the only supported way
-	// for sync_fd semaphores) means that after the next wait operation,
-	// the semaphore is reset to its prior state, i.e. we can import
-	// a new semaphore next frame.
-	// NOTE: as mentioned in the egl backend, the whole kms_fence_fd
-	// is not needed with the currnet architecture of the application
-	// since we only re-use buffers after kms is finished with them.
-	// Should probably work on that.
-	/*
-	VkImportSemaphoreFdInfoKHR isi = {0};
-	isi.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR;
-	isi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-	isi.fd = dup(buffer->kms_fence_fd);
-	isi.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
-	isi.fd = buffer->kms_fence_fd;
-	isi.semaphore = img->buffer_semaphore;
-	res = vk_dev->api.importSemaphoreFdKHR(vk_dev->dev, &isi);
-	if (res != VK_SUCCESS) {
-		vk_error(res, "vkImportSemaphoreFdKHR");
-		return false;
-	}
-	*/
+	// make the validation layers happy and assert that the command
+	// buffer really has finished. Otherwise it's an error in the drm
+	// subsystem/an error in our program (buffer reuse) logic
+	if (!img->first) {
+		res = vkGetFenceStatus(vk_dev->dev, img->render_fence);
+		if (res != VK_SUCCESS) {
+			vk_error(res, "Invalid render_fence status");
+		}
 
-	// debug
-	// we need this fence pretty much only to keep the validation layers
-	// happy (and for debugging i guess).
-	if(vkGetFenceStatus(vk_dev->dev, img->render_fence) != VK_SUCCESS) {
-		error("invalid fence status\n");
-	}
-
-	// reset the fence from the previous frame
-	res = vkResetFences(vk_dev->dev, 1, &img->render_fence);
-	if (res != VK_SUCCESS) {
-		vk_error(res, "vkResetFences");
-		return false;
+		res = vkResetFences(vk_dev->dev, 1, &img->render_fence);
+		if (res != VK_SUCCESS) {
+			vk_error(res, "vkResetFences");
+		}
+	} else {
+		img->first = false;
 	}
 
 	// submit the buffers command buffer
+	// for explicit fencing:
 	// - it waits for the kms_fence_fd semaphore
-	// - upon completion, it signals the render fence
+	// - upon completion, it signals the render semaphore
 	VkPipelineStageFlags stage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
 	VkSubmitInfo submission = {0};
 	submission.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 	submission.commandBufferCount = 1;
 	submission.pCommandBuffers = &img->cb;
-	submission.pSignalSemaphores = &img->render_semaphore;
-	submission.signalSemaphoreCount = 1u;
-	// TODO
-	// submission.waitSemaphoreCount = 1;
-	// submission.pWaitDstStageMask = &stage;
-	// submission.pWaitSemaphores = &img->buffer_semaphore;
+
+	if (buffer->output->explicit_fencing) {
+		// NOTE: we don't have to recreate it every frame but there
+		// are currently validation layer errors for sync_fd handles
+		// (don't reset payload on export) so we recreate the
+		// semaphore in every frame. Shouldn't hurt performance.
+		if (img->buffer_semaphore) {
+			vkDestroySemaphore(vk_dev->dev, img->render_semaphore, NULL);
+		}
+
+		VkExportSemaphoreCreateInfo esi = {0};
+		esi.sType = VK_STRUCTURE_TYPE_EXPORT_SEMAPHORE_CREATE_INFO;
+		esi.handleTypes = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+
+		VkSemaphoreCreateInfo sem_info = {0};
+		sem_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+		sem_info.pNext = &esi;
+		res = vkCreateSemaphore(vk_dev->dev, &sem_info, NULL, &img->render_semaphore);
+		if (res != VK_SUCCESS) {
+			vk_error(res, "vkCreateSemaphore");
+			return false;
+		}
+
+		// importing semaphore transfers ownership to vulkan
+		// importing it as temporary (which is btw the only supported way
+		// for sync_fd semaphores) means that after the next wait operation,
+		// the semaphore is reset to its prior state, i.e. we can import
+		// a new semaphore next frame.
+		// NOTE: as mentioned in the egl backend, the whole kms_fence_fd
+		// is not needed with the currnet architecture of the application
+		// since we only re-use buffers after kms is finished with them.
+		// Should probably work on that.
+		VkImportSemaphoreFdInfoKHR isi = {0};
+		isi.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR;
+		isi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+		isi.fd = dup(buffer->kms_fence_fd);
+		isi.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
+		isi.fd = buffer->kms_fence_fd;
+		isi.semaphore = img->buffer_semaphore;
+		res = vk_dev->api.importSemaphoreFdKHR(vk_dev->dev, &isi);
+		if (res != VK_SUCCESS) {
+			vk_error(res, "vkImportSemaphoreFdKHR");
+			return false;
+		}
+
+		submission.signalSemaphoreCount = 1u;
+		submission.pSignalSemaphores = &img->render_semaphore;
+		submission.waitSemaphoreCount = 1;
+		submission.pWaitDstStageMask = &stage;
+		submission.pWaitSemaphores = &img->buffer_semaphore;
+	}
+
 	res = vkQueueSubmit(vk_dev->queue, 1, &submission, img->render_fence);
 	if (res != VK_SUCCESS) {
 		vk_error(res, "vkQueueSubmit");
 		return false;
 	}
 
-	if (img->buffer.render_fence_fd) {
-		close(img->buffer.render_fence_fd);
-	}
+	if (buffer->output->explicit_fencing) {
+		if (img->buffer.render_fence_fd) {
+			close(img->buffer.render_fence_fd);
+		}
 
-	// NOTE: yes, we have to export the fence *every frame* since we pass
-	// ownership to the kernel when passing the fence fd.
-	// additionally, to export a fence as sync_fd, it
-	// "must be signaled, or have an associated fence signal operation
-	// pending execution", since sync_fd has copy transference semantics
-	// (see the vulkan spec for more details or importing/exporting
-	// fences). So it's important that we do this *after* we sumit
-	// our command buffer using this fence
-	// TODO: replace fd?
-	/*
-	VkFenceGetFdInfoKHR fdi = {0};
-	fdi.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
-	fdi.fence = img->render_fence;
-	fdi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
-	res = vk_dev->api.getFenceFdKHR(vk_dev->dev, &fdi, &img->buffer.render_fence_fd);
-	if (res != VK_SUCCESS) {
-		vk_error(res, "vkGetFenceFdKHR");
-		return false;
-	}
-	*/
+		// NOTE: we have to export the fence/semaphore *every frame* since
+		// we pass ownership to the kernel when passing the sync_fd.
+		// additionally, to export a fence as sync_fd, it
+		// "must be signaled, or have an associated fence signal operation
+		// pending execution", since sync_fd has copy transference semantics
+		// (see the vulkan spec for more details or importing/exporting
+		// fences/semaphores). So it's important that we do this *after* we sumit
+		// our command buffer using this fence/semaphore
+		VkSemaphoreGetFdInfoKHR fdi = {0};
+		fdi.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
+		fdi.semaphore = img->render_semaphore;
+		fdi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
+		res = vk_dev->api.getSemaphoreFdKHR(vk_dev->dev, &fdi,
+			&img->buffer.render_fence_fd);
+		if (res != VK_SUCCESS) {
+			vk_error(res, "vkGetSemaphoreFdKHR");
+			return false;
+		}
 
-	VkSemaphoreGetFdInfoKHR fdi = {0};
-	fdi.sType = VK_STRUCTURE_TYPE_SEMAPHORE_GET_FD_INFO_KHR;
-	fdi.semaphore = img->render_semaphore;
-	fdi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
-	res = vk_dev->api.getSemaphoreFdKHR(vk_dev->dev, &fdi, &img->buffer.render_fence_fd);
-	if (res != VK_SUCCESS) {
-		vk_error(res, "vkGetSemaphoreFdKHR");
-		return false;
-	}
-
-	// TODO: don't stall...
-	// res = vkWaitForFences(vk_dev->dev, 1, &img->render_fence, 0, 1000 * 1000 * 1000); // 1s
-	res = vkWaitForFences(vk_dev->dev, 1, &img->render_fence, 0, UINT64_MAX);
-	if (res != VK_SUCCESS) {
-		vk_error(res, "vkWaitForFences");
-		return false;
+		/*
+		VkFenceGetFdInfoKHR fdi = {0};
+		fdi.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
+		fdi.fence = img->render_fence;
+		fdi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
+		res = vk_dev->api.getFenceFdKHR(vk_dev->dev, &fdi, &img->buffer.render_fence_fd);
+		if (res != VK_SUCCESS) {
+			vk_error(res, "vkGetFenceFdKHR");
+			return false;
+		}
+		*/
+	} else {
+		// stall when no able to use explicit fencing
+		res = vkWaitForFences(vk_dev->dev, 1, &img->render_fence, false, UINT64_MAX);
+		if (res != VK_SUCCESS) {
+			vk_error(res, "vkWaitForFences");
+			return false;
+		}
 	}
 
 	return true;
