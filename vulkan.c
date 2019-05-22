@@ -54,7 +54,6 @@ struct vk_device {
 		PFN_vkCreateDebugUtilsMessengerEXT createDebugUtilsMessengerEXT;
 		PFN_vkDestroyDebugUtilsMessengerEXT destroyDebugUtilsMessengerEXT;
 		PFN_vkGetMemoryFdPropertiesKHR getMemoryFdPropertiesKHR;
-		PFN_vkGetFenceFdKHR getFenceFdKHR;
 		PFN_vkGetSemaphoreFdKHR getSemaphoreFdKHR;
 		PFN_vkImportSemaphoreFdKHR importSemaphoreFdKHR;
 	} api;
@@ -807,30 +806,6 @@ struct vk_device *vk_device_create(struct device *device)
 			goto error;
 		}
 
-		// we currently don't export/import fences
-		/*
-		VkPhysicalDeviceExternalFenceInfo efi = {0};
-		efi.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTERNAL_FENCE_INFO;
-		efi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
-
-		VkExternalFenceProperties efp = {0};
-		efp.sType = VK_STRUCTURE_TYPE_EXTERNAL_FENCE_PROPERTIES;
-		vkGetPhysicalDeviceExternalFenceProperties(phdev, &efi, &efp);
-
-		if((efp.externalFenceFeatures &
-				VK_EXTERNAL_FENCE_FEATURE_EXPORTABLE_BIT) == 0) {
-			error("Vulkan can't export sync_fd fences");
-			goto error;
-		}
-
-		vk_dev->api.getFenceFdKHR = (PFN_vkGetFenceFdKHR)
-			vkGetDeviceProcAddr(vk_dev->dev, "vkGetFenceFdKHR");
-		if (!vk_dev->api.getFenceFdKHR) {
-			error("Failed to retrieve vkGetFenceFdKHR\n");
-			vk_dev->explicit_fencing = false;
-		}
-		*/
-
 		vk_dev->api.getSemaphoreFdKHR = (PFN_vkGetSemaphoreFdKHR)
 			vkGetDeviceProcAddr(vk_dev->dev, "vkGetSemaphoreFdKHR");
 		if (!vk_dev->api.getSemaphoreFdKHR) {
@@ -1294,11 +1269,6 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 		goto err;
 	}
 
-	// create render fence/semaphore
-	// VkExportFenceCreateInfo efi = {0};
-	// efi.sType = VK_STRUCTURE_TYPE_EXPORT_FENCE_CREATE_INFO;
-	// efi.handleTypes = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
-
 	VkFenceCreateInfo fence_info = {0};
 	fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
 	// fence_info.pNext = &efi;
@@ -1450,9 +1420,9 @@ bool buffer_vk_fill(struct buffer *buffer, float anim_progress)
 		// the semaphore is reset to its prior state, i.e. we can import
 		// a new semaphore next frame.
 		// NOTE: as mentioned in the egl backend, the whole kms_fence_fd
-		// is not needed with the currnet architecture of the application
+		// is not needed with the current architecture of the application
 		// since we only re-use buffers after kms is finished with them.
-		// Should probably work on that.
+		// In real applications it might be useful though to use it.
 		VkImportSemaphoreFdInfoKHR isi = {0};
 		isi.sType = VK_STRUCTURE_TYPE_IMPORT_SEMAPHORE_FD_INFO_KHR;
 		isi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
@@ -1502,18 +1472,6 @@ bool buffer_vk_fill(struct buffer *buffer, float anim_progress)
 			vk_error(res, "vkGetSemaphoreFdKHR");
 			return false;
 		}
-
-		/*
-		VkFenceGetFdInfoKHR fdi = {0};
-		fdi.sType = VK_STRUCTURE_TYPE_FENCE_GET_FD_INFO_KHR;
-		fdi.fence = img->render_fence;
-		fdi.handleType = VK_EXTERNAL_FENCE_HANDLE_TYPE_SYNC_FD_BIT;
-		res = vk_dev->api.getFenceFdKHR(vk_dev->dev, &fdi, &img->buffer.render_fence_fd);
-		if (res != VK_SUCCESS) {
-			vk_error(res, "vkGetFenceFdKHR");
-			return false;
-		}
-		*/
 	} else {
 		// stall when no able to use explicit fencing
 		res = vkWaitForFences(vk_dev->dev, 1, &img->render_fence, false, UINT64_MAX);
