@@ -65,7 +65,6 @@ struct vk_device {
 	VkQueue queue;
 
 	// pipeline
-	// TODO: use and fill ubo
 	VkDescriptorSetLayout ds_layout;
 	VkRenderPass rp;
 	VkPipelineLayout pipe_layout;
@@ -341,6 +340,9 @@ void vk_device_destroy(struct vk_device *device)
 	if (device->command_pool) {
 		vkDestroyCommandPool(device->dev, device->command_pool, NULL);
 	}
+	if (device->ds_layout) {
+		vkDestroyDescriptorSetLayout(device->dev, device->ds_layout, NULL);
+	}
 	if (device->ds_pool) {
 		vkDestroyDescriptorPool(device->dev, device->ds_pool, NULL);
 	}
@@ -359,7 +361,6 @@ void vk_device_destroy(struct vk_device *device)
 
 static bool init_pipeline(struct vk_device *dev)
 {
-
 	// render pass
 	// NOTE: we don't care about previous contents of the image since
 	// we always render the full image. For incremental presentation you
@@ -404,10 +405,26 @@ static bool init_pipeline(struct vk_device *dev)
 	}
 
 	// pipeline layout
-	// our simple pipeline doesn't use any descriptor sets or push constants,
-	// so the pipeline layout is trivial
+	VkDescriptorSetLayoutBinding binding = {0};
+	binding.binding = 0;
+	binding.descriptorCount = 1;
+	binding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	binding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+	VkDescriptorSetLayoutCreateInfo dli = {0};
+	dli.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+	dli.bindingCount = 1u;
+	dli.pBindings = &binding;
+	res = vkCreateDescriptorSetLayout(dev->dev, &dli, NULL, &dev->ds_layout);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkCreateDescriptorSetLayout");
+		return false;
+	}
+
 	VkPipelineLayoutCreateInfo pli = {0};
 	pli.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+	pli.setLayoutCount = 1;
+	pli.pSetLayouts = &dev->ds_layout;
 	res = vkCreatePipelineLayout(dev->dev, &pli, NULL, &dev->pipe_layout);
 	if (res != VK_SUCCESS) {
 		vk_error(res, "vkCreatePipelineLayout");
@@ -783,6 +800,22 @@ struct vk_device *vk_device_create(struct device *device)
 		goto error;
 	}
 
+	// descriptor pool
+	VkDescriptorPoolSize pool_size = {0};
+	pool_size.descriptorCount = BUFFER_QUEUE_DEPTH;
+	pool_size.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+
+	VkDescriptorPoolCreateInfo dpi = {0};
+	dpi.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+	dpi.maxSets = BUFFER_QUEUE_DEPTH;
+	dpi.poolSizeCount = 1u;
+	dpi.pPoolSizes = &pool_size;
+	res = vkCreateDescriptorPool(vk_dev->dev, &dpi, NULL, &vk_dev->ds_pool);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkCreateDescriptorPool");
+		goto error;
+	}
+
 	if (vk_dev->explicit_fencing) {
 		// semaphore import/export support
 		// we import kms_fence_fd as semaphore and add that as wait semaphore
@@ -977,10 +1010,9 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	num_planes = gbm_bo_get_plane_count(bo);
 	VkSubresourceLayout plane_layouts[4] = {0};
 	debug("Creating buffer with modifier %lu\n", img->buffer.modifier);
-	for (unsigned i = 0; i < num_planes; i++) { // like egl-gles.c
+	for (unsigned i = 0; i < num_planes; i++) {
 		union gbm_bo_handle h;
 
-		/* In hindsight, we got this API wrong. */
 		h = gbm_bo_get_handle_for_plane(bo, i);
 		if (h.u32 == 0 || h.s32 == -1) {
 			error("failed to get handle for BO plane %d (modifier 0x%" PRIx64 ")\n",
@@ -1015,7 +1047,9 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	// TODO: could all planes point to the same dma_buf object?
 	// we can compare that via the SYS_kcmp syscall on linux,
 	// is that valid here? In that case we can get away with 1 memory
-	// object despite multiple planes i guess
+	// object despite multiple planes i guess. Not sure how to correctly
+	// bind the memory then though... re-read the vulkan spec, if it
+	// says something about it (dma-buf and image-drm-format-modifier exts)
 	bool disjoint = (num_planes > 1);
 	debug("plane count: %d\n", num_planes);
 
@@ -1173,6 +1207,76 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 		goto err;
 	}
 
+	// create ubo and descriptor set
+	const float ubo_size = 4;
+	VkBufferCreateInfo bi = {0};
+	bi.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+	bi.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+	bi.size = ubo_size;
+	bi.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+	res = vkCreateBuffer(vk_dev->dev, &bi, NULL, &img->ubo);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkCreateBuffer");
+		goto err;
+	}
+
+	VkMemoryRequirements bmr = {0};
+	vkGetBufferMemoryRequirements(vk_dev->dev, img->ubo, &bmr);
+
+	VkMemoryAllocateInfo mai = {0};
+	mai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+	mai.allocationSize = bmr.size;
+
+	// NOTE: the vulkan spec guarantees that non-sparse buffers can
+	// always be allocated on host visible, coherent memory, i.e.
+	// we must find a valid memory type.
+	int mem_type = find_mem_type(vk_dev->phdev,
+		VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+		VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, bmr.memoryTypeBits);
+	assert(mem_type >= 0);
+	mai.memoryTypeIndex = mem_type;
+	res = vkAllocateMemory(vk_dev->dev, &mai, NULL, &img->ubo_mem);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkAllocateMemory");
+		goto err;
+	}
+
+	res = vkBindBufferMemory(vk_dev->dev, img->ubo, img->ubo_mem, 0);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkBindBufferMemory");
+		goto err;
+	}
+
+	res = vkMapMemory(vk_dev->dev, img->ubo_mem, 0, ubo_size, 0, &img->ubo_map);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkMapMemory");
+		goto err;
+	}
+
+	VkDescriptorSetAllocateInfo dai = {0};
+	dai.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+	dai.descriptorPool = vk_dev->ds_pool;
+	dai.descriptorSetCount = 1;
+	dai.pSetLayouts = &vk_dev->ds_layout;
+	res = vkAllocateDescriptorSets(vk_dev->dev, &dai, &img->ds);
+	if (res != VK_SUCCESS) {
+		vk_error(res, "vkAllocateDescriptorSets");
+		goto err;
+	}
+
+	VkDescriptorBufferInfo buffer_info = {0};
+	buffer_info.buffer = img->ubo;
+	buffer_info.offset = 0;
+	buffer_info.range = ubo_size;
+
+	VkWriteDescriptorSet write = {0};
+	write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+	write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+	write.pBufferInfo = &buffer_info;
+	write.descriptorCount = 1;
+	write.dstSet = img->ds;
+	vkUpdateDescriptorSets(vk_dev->dev, 1, &write, 0, NULL);
+
 	// create and record render command buffer
 	VkCommandBufferAllocateInfo cmd_buf_info = {0};
 	cmd_buf_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -1189,8 +1293,12 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
 	vkBeginCommandBuffer(img->cb, &begin_info);
 
+	// NOTE: we don't need a pipeline barrier for our host write
+	// to the mapped ubo here (that happens every frame) because
+	// vkQueueSubmit implicitly inserts such a dependency
+
 	// acquire ownership of the image we want to render
-	// TODO: as already mentioned on device creation, strictly
+	// XXX: as already mentioned on device creation, strictly
 	// speaking we need queue_family_foreign here. But since that
 	// isn't supported on any mesa driver yet (not even a pr) we
 	// try our luck with queue_family_external (which should work for
@@ -1213,7 +1321,9 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	barrier.subresourceRange.baseMipLevel = 0;
 	barrier.subresourceRange.layerCount = 1;
 	barrier.subresourceRange.levelCount = 1;
-	// NOTE: not completely sure about the stages
+
+	// NOTE: not completely sure about the stages for image
+	// ownership transfer
 	vkCmdPipelineBarrier(img->cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
 		VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, NULL,
 		0, NULL, 1, &barrier);
@@ -1243,6 +1353,8 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	vkCmdSetScissor(img->cb, 0, 1, &rect);
 
 	vkCmdBindPipeline(img->cb, VK_PIPELINE_BIND_POINT_GRAPHICS, vk_dev->pipe);
+	vkCmdBindDescriptorSets(img->cb, VK_PIPELINE_BIND_POINT_GRAPHICS,
+		vk_dev->pipe_layout, 0, 1, &img->ds, 0, NULL);
 	vkCmdDraw(img->cb, 4, 1, 0, 0);
 
 	vkCmdEndRenderPass(img->cb);
@@ -1342,9 +1454,16 @@ void buffer_vk_destroy(struct device *device, struct buffer *buffer)
 	if (img->image) {
 		vkDestroyImage(vk_dev->dev, img->image, NULL);
 	}
+	if (img->ubo) {
+		vkDestroyBuffer(vk_dev->dev, img->ubo, NULL);
+	}
+	if (img->ubo_mem) {
+		vkFreeMemory(vk_dev->dev, img->ubo_mem, NULL);
+	}
 
 	for (unsigned i = 0u; i < 4u; ++i) {
 		if (img->memories[i]) {
+			// will implicitly be unmapped
 			// TODO: this currently gives a segmentation fault in
 			// the validation layers, probably an error there
 			// so not doing it here is the cause for the validation layers
@@ -1364,6 +1483,9 @@ bool buffer_vk_fill(struct buffer *buffer, int frame_num)
 	struct vk_device *vk_dev = buffer->output->device->vk_device;
 	assert(vk_dev);
 	VkResult res;
+
+	// update frame number in mapped memory
+	*(float*)img->ubo_map = ((float)frame_num) / NUM_ANIM_FRAMES;
 
 	// make the validation layers happy and assert that the command
 	// buffer really has finished. Otherwise it's an error in the drm
