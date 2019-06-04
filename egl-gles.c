@@ -770,8 +770,25 @@ void buffer_egl_destroy(struct device *device, struct buffer *buffer)
 	gbm_bo_destroy(buffer->gbm.bo);
 }
 
+/*
+ * Fills the vertex and color data to draw one of four quadrants of the
+ * full-screen checkerboard pattern.
+ *
+ * The border separating the quadrants is animated from the upper-left to the
+ * lower-right, using `frame_num` to drive the animation. Parameter `loc`
+ * defines the quadrant for which to get the data for.
+ *
+ * A quadrant is drawn as a two-triangle triangle-fan. The vertex array's
+ * coordinates will be interpreted directly as X/Y normalized device
+ * coordinates where
+ *
+ *     x = [-1 .. 1] (left ... right)
+ *     y = [-1 .. 1] (bottom ... top)
+ *
+ */
 static void fill_verts(GLfloat *verts, GLfloat *col, int frame_num, int loc)
 {
+	/* factor is in range [-1 .. 1] */
 	float factor = ((frame_num * 2.0) / (float) NUM_ANIM_FRAMES) - 1.0f;
 	GLfloat top, bottom, left, right;
 
@@ -779,43 +796,47 @@ static void fill_verts(GLfloat *verts, GLfloat *col, int frame_num, int loc)
 
 	switch (loc) {
 	case 0:
+		/* upper-left black quadrant */
 		col[0] = 0.0f;
 		col[1] = 0.0f;
 		col[2] = 0.0f;
 		col[3] = 1.0f;
-		top = -1.0f;
+		top = 1.0f;
 		left = -1.0f;
-		bottom = factor;
+		bottom = -factor;
 		right = factor;
 		break;
 	case 1:
+		/* upper-right red quadrant */
 		col[0] = 1.0f;
 		col[1] = 0.0f;
 		col[2] = 0.0f;
 		col[3] = 1.0f;
-		top = -1.0f;
+		top = 1.0f;
 		left = factor;
 		right = 1.0f;
-		bottom = factor;
+		bottom = -factor;
 		break;
 	case 2:
+		/* lower-left blue quadrant */
 		col[0] = 0.0f;
 		col[1] = 0.0f;
 		col[2] = 1.0f;
 		col[3] = 1.0f;
-		top = factor;
+		top = -factor;
 		left = -1.0f;
-		bottom = 1.0f;
+		bottom = -1.0f;
 		right = factor;
 		break;
 	case 3:
+		/* lower-right purpose quadrant */
 		col[0] = 1.0f;
 		col[1] = 0.0f;
 		col[2] = 1.0f;
 		col[3] = 1.0f;
-		top = factor;
+		top = -factor;
 		left = factor;
-		bottom = 1.0f;
+		bottom = -1.0f;
 		right = 1.0f;
 		break;
 	}
