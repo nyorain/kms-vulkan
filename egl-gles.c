@@ -42,6 +42,7 @@
 #if defined(HAVE_GL_CORE)
 #include <GL/gl.h>
 #include <GL/glext.h>
+#define _APIENTRYP APIENTRYP
 #else
 #include <GLES3/gl3.h>
 #include <GLES3/gl3ext.h>
@@ -50,6 +51,18 @@
  * (i.e. glEGLImageTargetTexture2DOES etc.)
  */
 #include <GLES2/gl2ext.h>
+#define _APIENTRYP GL_APIENTRYP
+#endif
+
+/* Add glFramebufferParameteri signature manually if needed. Actual context
+ * might support higher vGL/GLES version than exposed through headers */
+#if !(GL_VERSION_4_3 == 1) || !(GL_ES_VERSION_3_1 == 1)
+typedef void (_APIENTRYP PFNGLFRAMEBUFFERPARAMETERIPROC) (GLenum target, GLenum pname, GLint param);
+#endif
+
+#if !defined(GL_FRAMEBUFFER_FLIP_Y_MESA)
+/* see https://www.khronos.org/registry/OpenGL/extensions/MESA/MESA_framebuffer_flip_y.txt */
+#define GL_FRAMEBUFFER_FLIP_Y_MESA 0x8BBB
 #endif
 
 bool
@@ -293,8 +306,9 @@ egl_create_context(struct output *output)
 static const char *vert_shader_text_gles =
 	"precision highp float;\n"
 	"attribute vec2 in_pos;\n"
+	"uniform mat4 u_proj;\n"
 	"void main() {\n"
-	"  gl_Position = vec4(in_pos, 0.0, 1.0);\n"
+	"  gl_Position = u_proj * vec4(in_pos, 0.0, 1.0);\n"
 	"}\n";
 
 static const char *frag_shader_text_gles =
@@ -307,8 +321,9 @@ static const char *frag_shader_text_gles =
 static const char *vert_shader_text_glcore =
 	"#version 330 core\n"
 	"in vec2 in_pos;\n"
+	"uniform mat4 u_proj;\n"
 	"void main() {\n"
-	"  gl_Position = vec4(in_pos, 0.0, 1.0);\n"
+	"  gl_Position = u_proj * vec4(in_pos, 0.0, 1.0);\n"
 	"}\n";
 
 static const char *frag_shader_text_glcore =
@@ -355,6 +370,12 @@ output_egl_setup(struct output *output)
 	const char *exts = eglQueryString(device->egl_dpy, EGL_EXTENSIONS);
 	EGLBoolean ret;
 	GLint status;
+	GLfloat proj[] = {
+		1.0f, 0.0f, 0.0f, 0.0f,
+		0.0f, 1.0f, 0.0f, 0.0f,
+		0.0f, 0.0f, 1.0f, 0.0f,
+		0.0f, 0.0f, 0.0f, 1.0f
+	};
 
 	/*
 	 * Explicit fencing support requires us to be able to export EGLSync
@@ -400,6 +421,10 @@ output_egl_setup(struct output *output)
 			error("GL_OES_EGL_sync not supported\n");
 			goto out_ctx;
 		}
+
+		output->egl.have_gl_mesa_framebuffer_flip_y =
+			gl_extension_supported(exts, "GL_MESA_framebuffer_flip_y");
+
 	} else {
 		const GLubyte *ext;
 		bool found_image = false;
@@ -414,6 +439,8 @@ output_egl_setup(struct output *output)
 				found_image = true;
 			else if (strcmp((const char *) ext, "GL_OES_EGL_sync") == 0)
 				found_sync = true;
+			else if (strcmp((const char *) ext, "GL_MESA_framebuffer_flip_y") == 0)
+				output->egl.have_gl_mesa_framebuffer_flip_y = true;
 		}
 
 		if (!found_image) {
@@ -460,8 +487,19 @@ output_egl_setup(struct output *output)
 	assert(status);
 
 	output->egl.col_uniform = glGetUniformLocation(output->egl.gl_prog, "u_col");
+	output->egl.proj_uniform = glGetUniformLocation(output->egl.gl_prog, "u_proj");
 
 	glUseProgram(output->egl.gl_prog);
+
+	/* If we can't flip Y through GL_MESA_framebuffer_flip_y,
+	 * apply a mirror transformation directly in the shader's
+	 * projection matrix */
+	if (!output->egl.have_gl_mesa_framebuffer_flip_y)
+	{
+		/* flip sign of row=1, col=1 to flip Y */
+		proj[5] *= -1;
+	}
+	glUniformMatrix4fv(output->egl.proj_uniform, 1, false, proj);
 
 	glGenBuffers(1, &output->egl.vbo);
 	glBindBuffer(GL_ARRAY_BUFFER, output->egl.vbo);
@@ -513,6 +551,7 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 	struct buffer *ret = calloc(1, sizeof(*ret));
 	static PFNEGLCREATEIMAGEKHRPROC create_img = NULL;
 	static PFNGLEGLIMAGETARGETTEXTURE2DOESPROC target_tex_2d = NULL;
+	static PFNGLFRAMEBUFFERPARAMETERIPROC framebuffer_parameteri = NULL;
 	EGLint attribs[64] = { 0, }; /* see note below about type */
 	EGLint nattribs = 0;
 	EGLBoolean err;
@@ -732,6 +771,18 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output)
 
 	glGenFramebuffers(1, &ret->gbm.fbo_id);
 	glBindFramebuffer(GL_FRAMEBUFFER, ret->gbm.fbo_id);
+
+	if (output->egl.have_gl_mesa_framebuffer_flip_y)
+	{
+		if (!framebuffer_parameteri) {
+			framebuffer_parameteri = (PFNGLFRAMEBUFFERPARAMETERIPROC)
+				eglGetProcAddress("glFramebufferParameteri");
+		}
+		assert(framebuffer_parameteri);
+		framebuffer_parameteri(GL_FRAMEBUFFER, GL_FRAMEBUFFER_FLIP_Y_MESA, GL_TRUE);
+		debug("GL_MESA_framebuffer_flip_y is available\n");
+	}
+
 	glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
 			       ret->gbm.tex_id, 0);
 	assert(glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
@@ -770,8 +821,25 @@ void buffer_egl_destroy(struct device *device, struct buffer *buffer)
 	gbm_bo_destroy(buffer->gbm.bo);
 }
 
+/*
+ * Fills the vertex and color data to draw one of four quadrants of the
+ * full-screen checkerboard pattern.
+ *
+ * The border separating the quadrants is animated from the upper-left to the
+ * lower-right, using `frame_num` to drive the animation. Parameter `loc`
+ * defines the quadrant for which to get the data for.
+ *
+ * A quadrant is drawn as a two-triangle triangle-fan. The vertex array's
+ * coordinates will be interpreted directly as X/Y normalized device
+ * coordinates where
+ *
+ *     x = [-1 .. 1] (left ... right)
+ *     y = [-1 .. 1] (bottom ... top)
+ *
+ */
 static void fill_verts(GLfloat *verts, GLfloat *col, int frame_num, int loc)
 {
+	/* factor is in range [-1 .. 1] */
 	float factor = ((frame_num * 2.0) / (float) NUM_ANIM_FRAMES) - 1.0f;
 	GLfloat top, bottom, left, right;
 
@@ -779,43 +847,47 @@ static void fill_verts(GLfloat *verts, GLfloat *col, int frame_num, int loc)
 
 	switch (loc) {
 	case 0:
+		/* upper-left black quadrant */
 		col[0] = 0.0f;
 		col[1] = 0.0f;
 		col[2] = 0.0f;
 		col[3] = 1.0f;
-		top = -1.0f;
+		top = 1.0f;
 		left = -1.0f;
-		bottom = factor;
+		bottom = -factor;
 		right = factor;
 		break;
 	case 1:
+		/* upper-right red quadrant */
 		col[0] = 1.0f;
 		col[1] = 0.0f;
 		col[2] = 0.0f;
 		col[3] = 1.0f;
-		top = -1.0f;
+		top = 1.0f;
 		left = factor;
 		right = 1.0f;
-		bottom = factor;
+		bottom = -factor;
 		break;
 	case 2:
+		/* lower-left blue quadrant */
 		col[0] = 0.0f;
 		col[1] = 0.0f;
 		col[2] = 1.0f;
 		col[3] = 1.0f;
-		top = factor;
+		top = -factor;
 		left = -1.0f;
-		bottom = 1.0f;
+		bottom = -1.0f;
 		right = factor;
 		break;
 	case 3:
+		/* lower-right purpose quadrant */
 		col[0] = 1.0f;
 		col[1] = 0.0f;
 		col[2] = 1.0f;
 		col[3] = 1.0f;
-		top = factor;
+		top = -factor;
 		left = factor;
-		bottom = 1.0f;
+		bottom = -1.0f;
 		right = 1.0f;
 		break;
 	}

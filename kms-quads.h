@@ -397,10 +397,13 @@ struct output {
 		GLuint gl_prog;
 		GLuint pos_attr;
 		GLuint col_uniform;
+		GLuint proj_uniform;
 		GLuint vbo;
 		GLuint vao;
 		/* Whether to use big OpenGL Core Profile context or to use GLES */
 		bool gl_core;
+		/* Whether or not GL_MESA_framebuffer_flip_y is available */
+		bool have_gl_mesa_framebuffer_flip_y;
 	} egl;
 };
 

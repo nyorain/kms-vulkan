@@ -134,6 +134,15 @@ the `gbm_bo`s it allocated, with no way to keep them alive for longer.
 
 Directly allocating `gbm_bo`s requires more typing, but offers more control.
 
+There is one notable caveat when rendering into `gbm_bo`s via GL framebuffer
+objects and displaying these buffers directly via KMS: GL framebuffer objects
+are defined to have their origin in the lower-left corner. Scan-out, however,
+happens from top to bottom. As a result, your buffer content might be displayed
+upside-down. One solution to this problem is to apply a mirror transformation
+around the Y axis in the vertex shader. Another one is to use the extension
+`GL_MESA_framebuffer_flip_y` to provide the driver with a hint to flip the
+coordinate system while writing into a framebuffer object. Both approaches are
+implemented in this sample.
 
 ## Contact
 

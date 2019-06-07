@@ -161,15 +161,18 @@ static void atomic_event_handler(int fd,
 			      linux_sync_file_get_fence_time(output->buffer_last->kms_fence_fd));
 		}
 
-		/*
-		 * Print the time that the render fence FD signaled, i.e. when
-		 * we finished writing to the buffer that we have now started
-		 * displaying. It should be strictly before the KMS fence FD
-		 * time.
-		 */
-		assert(linux_sync_file_is_valid(output->buffer_pending->render_fence_fd));
-		debug("\trender fence time: %" PRIu64 "ns\n",
-		      linux_sync_file_get_fence_time(output->buffer_pending->render_fence_fd));
+		if (device->gbm_device)
+		{
+			/*
+			 * Print the time that the render fence FD signaled, i.e. when
+			 * we finished writing to the buffer that we have now started
+			 * displaying. It should be strictly before the KMS fence FD
+			 * time.
+			 */
+			assert(linux_sync_file_is_valid(output->buffer_pending->render_fence_fd));
+			debug("\trender fence time: %" PRIu64 "ns\n",
+			      linux_sync_file_get_fence_time(output->buffer_pending->render_fence_fd));
+		}
 	}
 
 	if (output->buffer_last) {
