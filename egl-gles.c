@@ -403,14 +403,12 @@ output_egl_setup(struct output *output)
 			     output->egl.ctx);
 	assert(ret);
 
-	exts = NULL;
-
 	/* glGetString on GL Core with GL_EXTENSIONS is an error,
 	 * so only do that if not using GL Core */
 	if (!output->egl.gl_core)
+	{
 		exts = (const char *) glGetString(GL_EXTENSIONS);
 
-	if (exts) {
 		if (!gl_extension_supported(exts, "GL_OES_EGL_image")) {
 			error("GL_OES_EGL_image not supported\n");
 			goto out_ctx;
@@ -437,7 +435,7 @@ output_egl_setup(struct output *output)
 			ext = glGetStringi(GL_EXTENSIONS, i);
 			if (strcmp((const char *) ext, "GL_OES_EGL_image") == 0)
 				found_image = true;
-			else if (strcmp((const char *) ext, "GL_OES_EGL_sync") == 0)
+			else if (strcmp((const char *) ext, "GL_EXT_EGL_sync") == 0)
 				found_sync = true;
 			else if (strcmp((const char *) ext, "GL_MESA_framebuffer_flip_y") == 0)
 				output->egl.have_gl_mesa_framebuffer_flip_y = true;
@@ -449,7 +447,7 @@ output_egl_setup(struct output *output)
 		}
 
 		if (output->explicit_fencing && !found_sync) {
-			error("GL_OES_EGL_sync not supported\n");
+			error("GL_EXT_EGL_sync not supported\n");
 			goto out_ctx;
 		}
 	}
