@@ -33,8 +33,19 @@ else
   deps += dependency('glesv2')
 endif
 
+sources = files('main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c')
+
+logind = dependency('lib' + get_option('logind-provider'), required: get_option('logind'), version: '>=237')
+
+if logind.found()
+    sources += files('logind.c')
+    deps += logind
+    defines += '-DHAVE_' + get_option('logind-provider').to_upper() + '=1'
+    defines += '-DHAVE_LOGIND=1'
+endif
+
 executable('kms-quads',
-  'main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c',
+  sources,
   dependencies: deps,
   c_args: defines,
 )

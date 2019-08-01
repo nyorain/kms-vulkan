@@ -5,3 +5,18 @@ option(
   description : 'Build support for OpenGL Core'
 )
 
+option(
+  'logind',
+  type: 'feature',
+  value: 'auto',
+  description: 'Enable support for rootless session via logind'
+)
+
+option(
+  'logind-provider',
+  type: 'combo',
+  choices: ['systemd', 'elogind'],
+  value: 'systemd',
+  description: 'Provider of logind support library'
+)
+

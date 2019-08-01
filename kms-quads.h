@@ -77,10 +77,12 @@
 #define error(...) fprintf(stderr, __VA_ARGS__)
 
 #define ARRAY_LENGTH(x) (sizeof(x) / sizeof((x)[0]))
+#define UNUSED __attribute__((unused))
 
 struct buffer;
 struct device;
 struct output;
+struct logind;
 
 
 #define BUFFER_QUEUE_DEPTH 3 /* how many buffers to allocate per output */
@@ -454,6 +456,9 @@ struct device {
 	/* /dev/tty* device. */
 	int vt_fd;
 	int saved_kb_mode; /* keyboard mode before we entered */
+
+	/* logind session, if any */
+	struct logind *session;
 };
 
 /*
@@ -580,3 +585,20 @@ linux_sync_file_get_fence_time(int fd)
 
 	return fence_info.timestamp_ns;
 }
+
+#if defined(HAVE_LOGIND)
+
+struct logind *logind_create(void);
+int logind_take_device(struct logind *s, const char *path);
+void logind_release_device(struct logind *s, int fd);
+void logind_destroy(struct logind *s);
+
+#else
+
+struct logind { int dummy; };
+static inline struct logind *logind_create(void) { return NULL; }
+static inline int logind_take_device(struct logind *s UNUSED, const char *path UNUSED) { return -1; }
+static void inline logind_release_device(struct logind *s UNUSED, int fd UNUSED) {}
+static void inline logind_destroy(struct logind *s UNUSED) {}
+
+#endif

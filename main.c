@@ -274,6 +274,7 @@ static void sighandler(int signo)
 
 int main(int argc, char *argv[])
 {
+	struct logind *session;
 	struct device *device;
 	int ret = 0;
 
