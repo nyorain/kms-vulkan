@@ -83,6 +83,7 @@ struct buffer;
 struct device;
 struct output;
 struct logind;
+struct input;
 
 
 #define BUFFER_QUEUE_DEPTH 3 /* how many buffers to allocate per output */
@@ -600,5 +601,20 @@ static inline struct logind *logind_create(void) { return NULL; }
 static inline int logind_take_device(struct logind *s UNUSED, const char *path UNUSED) { return -1; }
 static void inline logind_release_device(struct logind *s UNUSED, int fd UNUSED) {}
 static void inline logind_destroy(struct logind *s UNUSED) {}
+
+#endif
+
+#if defined(HAVE_INPUT)
+
+struct input* input_create(struct logind *session);
+void input_destroy(struct input *input);
+bool input_was_ESC_key_pressed(struct input *input);
+
+#else
+
+struct input { int dummy; };
+static inline struct input* input_create(struct logind *session UNUSED) { return NULL; }
+static inline void input_destroy(struct input *input UNUSED) {}
+static inline bool input_was_ESC_key_pressed(struct input *input UNUSED) { return false; }
 
 #endif

@@ -20,3 +20,10 @@ option(
   description: 'Provider of logind support library'
 )
 
+option(
+  'input',
+  type: 'feature',
+  value: 'auto',
+  description: 'Enable support for keyboard input'
+)
+

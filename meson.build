@@ -44,6 +44,16 @@ if logind.found()
     defines += '-DHAVE_LOGIND=1'
 endif
 
+libinput = dependency('libinput', required: get_option('input'))
+libudev = dependency('libudev', required: get_option('input'))
+
+if libinput.found() and libudev.found()
+    sources += files('input.c')
+    deps += libinput
+    deps += libudev
+    defines += '-DHAVE_INPUT=1'
+endif
+
 executable('kms-quads',
   sources,
   dependencies: deps,
