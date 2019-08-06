@@ -13,9 +13,13 @@ displays a simple animation run independently on all currently-active displays:
 ```shell
   # ./build/kms-quads
 ```
+Press ESC to quit the sample to go back to your terminal (requires
+libinput/libudev).
 
-To use a specific TTY, you can also pass the number as an environment variable,
-or as stdin:
+kms-quads uses logind to switch the current TTY to graphical mode, and to
+access KMS resources as an unprivileged user. In case logind can't be used,
+kms-quads attempts to directly switch the TTY mode (requires root), for which a
+specific TTY can be set through an environment variable, or as stdin:
 ```shell
   # TTYNO=4 ./build/kms-quads
   # ./build/kms-quads < /dev/tty4

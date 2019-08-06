@@ -2,21 +2,18 @@
  * This file implements handling of DRM device nodes as well as setting
  * up the VT/TTY layer in order to let us do graphics in the first place.
  *
- * As it currently only uses direct device access, it needs to be run
- * as root.
+ * The preferred method to do this on modern systems is to use systemd's
+ * logind, a D-Bus API which allows us access to privileged devices such as DRM
+ * and input devices without being root. It also handles resetting the TTY for
+ * us if we screw up and crash, which is really excellent. This sample borrows
+ * some code from wlroots to use logind (see logind.c).
  *
- * The preferred alternative on modern systems is to use systemd's logind,
- * a D-Bus API which allows us access to privileged devices such as DRM
- * and input devices without being root. It also handles resetting the TTY
- * for us if we screw up and crash, which is really excellent.
+ * In case logind can't be used, we fall back to direct VT handling, in which
+ * case this sample needs to run as root.
  *
- * An example of using logind is available from Weston. It uses the raw libdbus
- * API which can be pretty painful; GDBus is much more pleasant:
- * https://gitlab.freedesktop.org/wayland/weston/blob/master/libweston/launcher-logind.c
- *
- * VT switching is currently unimplemented. launcher-direct.c from Weston is
- * a decent reference of how to handle it, however it also involves handling
- * raw signals.
+ * VT switching is currently unimplemented. An example of how to implement VT
+ * switching is found in launcher-direct.c from Weston for direct use of VT,
+ * and in the full logind.c sources of wlroots when going over logind.
  */
 
 /*

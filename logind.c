@@ -1,6 +1,8 @@
 /*
- * This file implements basic logind integration to acquire/release devices.
- * It is mostly a copy of wlroot's own logind backend:
+ * This file implements basic logind integration to acquire/release devices in
+ * a secure and robust way.
+ *
+ * This file is mostly a copy of wlroot's logind session backend:
  * https://github.com/swaywm/wlroots/blob/master/backend/session/logind.c
  */
 
