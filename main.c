@@ -275,6 +275,7 @@ static void sighandler(int signo)
 int main(int argc, char *argv[])
 {
 	struct device *device;
+	struct input *input;
 	int ret = 0;
 
 	struct sigaction sa;
@@ -291,6 +292,15 @@ int main(int argc, char *argv[])
 		fprintf(stderr, "no usable KMS devices!\n");
 		return 1;
 	}
+#if defined(HAVE_INPUT)
+	input = input_create(device->session);
+	if (!input) {
+		fprintf(stderr, "failed to create input\n");
+		return 1;
+	}
+#else
+	input = NULL;
+#endif
 
 	/*
 	 * Allocate framebuffers to display on all our outputs.
@@ -432,9 +442,14 @@ int main(int argc, char *argv[])
 			fprintf(stderr, "error reading KMS events: %d\n", ret);
 			break;
 		}
+
+		if (input)
+			shall_exit = input_was_ESC_key_pressed(input);
 	}
 
 out:
+	if (input)
+	    input_destroy(input);
 	device_destroy(device);
 	fprintf(stdout, "good-bye\n");
 	return ret;

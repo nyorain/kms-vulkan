@@ -2,21 +2,18 @@
  * This file implements handling of DRM device nodes as well as setting
  * up the VT/TTY layer in order to let us do graphics in the first place.
  *
- * As it currently only uses direct device access, it needs to be run
- * as root.
+ * The preferred method to do this on modern systems is to use systemd's
+ * logind, a D-Bus API which allows us access to privileged devices such as DRM
+ * and input devices without being root. It also handles resetting the TTY for
+ * us if we screw up and crash, which is really excellent. This sample borrows
+ * some code from wlroots to use logind (see logind.c).
  *
- * The preferred alternative on modern systems is to use systemd's logind,
- * a D-Bus API which allows us access to privileged devices such as DRM
- * and input devices without being root. It also handles resetting the TTY
- * for us if we screw up and crash, which is really excellent.
+ * In case logind can't be used, we fall back to direct VT handling, in which
+ * case this sample needs to run as root.
  *
- * An example of using logind is available from Weston. It uses the raw libdbus
- * API which can be pretty painful; GDBus is much more pleasant:
- * https://gitlab.freedesktop.org/wayland/weston/blob/master/libweston/launcher-logind.c
- *
- * VT switching is currently unimplemented. launcher-direct.c from Weston is
- * a decent reference of how to handle it, however it also involves handling
- * raw signals.
+ * VT switching is currently unimplemented. An example of how to implement VT
+ * switching is found in launcher-direct.c from Weston for direct use of VT,
+ * and in the full logind.c sources of wlroots when going over logind.
  */
 
 /*
@@ -176,7 +173,7 @@ static void vt_reset(struct device *device)
  * Open a single KMS device, enumerate its resources, and attempt to find
  * usable outputs.
  */
-static struct device *device_open(const char *filename)
+static struct device *device_open(struct logind *session, const char *filename)
 {
 	struct device *ret = calloc(1, sizeof(*ret));
 	const char *gbm_env;
@@ -191,7 +188,10 @@ static struct device *device_open(const char *filename)
 	 * Open the device and ensure we have support for universal planes and
 	 * atomic modesetting.
 	 */
-	ret->kms_fd = open(filename, O_RDWR | O_CLOEXEC, 0);
+	if (session)
+		ret->kms_fd = logind_take_device(session, filename);
+	else
+		ret->kms_fd = open(filename, O_RDWR | O_CLOEXEC, 0);
 	if (ret->kms_fd < 0) {
 		fprintf(stderr, "warning: couldn't open %s: %s\n", filename,
 			strerror(errno));
@@ -310,7 +310,10 @@ err_plane_res:
 err_res:
 	drmModeFreeResources(ret->res);
 err_fd:
-	close(ret->kms_fd);
+	if (session)
+		logind_release_device(session, ret->kms_fd);
+	else
+		close(ret->kms_fd);
 err:
 	free(ret);
 	return NULL;
@@ -322,9 +325,21 @@ err:
  */
 struct device *device_create(void)
 {
+	struct logind *session;
 	struct device *ret;
 	drmDevicePtr *devices;
 	int num_devices;
+
+#if defined(HAVE_LOGIND)
+	session = logind_create();
+	if (!session)
+	{
+		fprintf(stderr, "failed to create sesssion\n");
+		goto err;
+	}
+#else
+	session = NULL;
+#endif
 
 	num_devices = drmGetDevices2(0, NULL, 0);
 	if (num_devices == 0) {
@@ -350,7 +365,7 @@ struct device *device_create(void)
 		if (!(candidate->available_nodes & (1 << DRM_NODE_PRIMARY)))
 			continue;
 
-		ret = device_open(candidate->nodes[DRM_NODE_PRIMARY]);
+		ret = device_open(session, candidate->nodes[DRM_NODE_PRIMARY]);
 		if (ret)
 			break;
 	}
@@ -361,16 +376,19 @@ struct device *device_create(void)
 		goto err;
 	}
 
-	if (vt_setup(ret) != 0) {
+	if (!session && vt_setup(ret) != 0) {
 		fprintf(stderr, "couldn't set up VT for graphics mode\n");
 		goto err_dev;
 	}
 
+	ret->session = session;
 	return ret;
 
 err_dev:
 	device_destroy(ret);
 err:
+	if (session)
+	    logind_destroy(session);
 	return NULL;
 }
 
@@ -385,8 +403,15 @@ void device_destroy(struct device *device)
 	if (device->gbm_device)
 		gbm_device_destroy(device->gbm_device);
 
-	close(device->kms_fd);
+	if (device->session)
+	{
+		logind_release_device(device->session, device->kms_fd);
+		logind_destroy(device->session);
+	}
+	else
+	{
+		close(device->kms_fd);
+		vt_reset(device);
+	}
 	free(device);
-
-	vt_reset(device);
 }
