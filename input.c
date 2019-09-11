@@ -30,8 +30,7 @@
 #include <errno.h>
 #include "kms-quads.h"
 
-struct input
-{
+struct input {
 	struct udev *udev;
 	struct libinput *input;
 };
@@ -68,21 +67,18 @@ struct input* input_create(struct logind *session)
 {
 	struct input *ret = calloc(1, sizeof(struct input));
 	ret->udev = udev_new();
-	if (!ret->udev)
-	{
+	if (!ret->udev) {
 		error("failed to create udev context\n");
 		goto err;
 	}
 
 	ret->input = libinput_udev_create_context(&libinput_impl, session, ret->udev);
-	if (!ret->input)
-	{
+	if (!ret->input) {
 	    error("failed to create libinput context\n");
 	    goto err_udev;
 	}
 
-	if (libinput_udev_assign_seat(ret->input, "seat0") < 0)
-	{
+	if (libinput_udev_assign_seat(ret->input, "seat0") < 0) {
 	    error("failed to assign udev seat to libinput instance");
 	    goto err_input;
 	}
@@ -114,8 +110,7 @@ bool input_was_ESC_key_pressed(struct input *input)
 
 	while ((event = libinput_get_event(input->input)) != NULL) {
 		type = libinput_event_get_type(event);
-		if (type == LIBINPUT_EVENT_KEYBOARD_KEY)
-		{
+		if (type == LIBINPUT_EVENT_KEYBOARD_KEY) {
 			struct libinput_event_keyboard *key_event = libinput_event_get_keyboard_event(event);
 			uint32_t key_code = libinput_event_keyboard_get_key(key_event);
 			/* 1 == KEY_ESC in input-event-codes.h */
