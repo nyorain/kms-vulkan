@@ -396,7 +396,7 @@ int main(int argc, char *argv[])
 		 * phase from each other, without dropping our frame rate to
 		 * the lowest common denominator.
 		 *
-		 * It does mean that we need to allocate paint the buffers for
+		 * It does mean that we need to paint the buffers for
 		 * each output individually, rather than having a single buffer
 		 * with the content for every output.
 		 */
