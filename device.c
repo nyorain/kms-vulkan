@@ -223,6 +223,11 @@ static struct device *device_open(struct logind *session, const char *filename)
 	debug("device %s framebuffer modifiers\n",
 	      (ret->fb_modifiers) ? "supports" : "does not support");
 
+	err = drmGetCap(ret->kms_fd, DRM_CAP_TIMESTAMP_MONOTONIC, &cap);
+	ret->monotonic_timestamps = (err == 0 && cap != 0);
+	debug("device %s clock monotonic timestamps\n",
+	      (ret->monotonic_timestamps) ? "supports" : "does not support");
+
 	/*
 	 * The two 'resource' properties describe the KMS capabilities for
 	 * this device.

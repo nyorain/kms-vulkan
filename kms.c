@@ -55,6 +55,7 @@
 #include <linux/kd.h>
 #include <linux/major.h>
 #include <linux/vt.h>
+#include <sys/timerfd.h>
 
 #include "kms-quads.h"
 
@@ -489,6 +490,7 @@ struct output *output_create(struct device *device,
 	drmModePlanePtr plane = NULL;
 	drmModeCrtcPtr crtc = NULL;
 	uint64_t refresh;
+	int timer_fd;
 
 	/* Find the encoder (a deprecated KMS object) for this connector. */
 	if (connector->encoder_id == 0) {
@@ -567,6 +569,13 @@ struct output *output_create(struct device *device,
 	       crtc->crtc_id, connector->connector_id, plane->plane_id,
 	       crtc->width, crtc->height, refresh);
 
+	timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+	if (timer_fd < 0)
+	{
+		fprintf(stderr, "failed to create timer file descriptor: %s\n", strerror(errno));
+		goto out_plane;
+	}
+
 	output = calloc(1, sizeof(*output));
 	assert(output);
 	output->device = device;
@@ -580,6 +589,7 @@ struct output *output_create(struct device *device,
 			"UNKNOWN"),
 		 connector->connector_type_id);
 	output->needs_repaint = true;
+	output->repaint_timer_fd = timer_fd;
 
 	/*
 	 * Just reuse the CRTC's existing mode: requires it to already be
@@ -628,6 +638,7 @@ struct output *output_create(struct device *device,
 		(output->props.plane[WDRM_PLANE_IN_FENCE_FD].prop_id &&
 		 output->props.crtc[WDRM_CRTC_OUT_FENCE_PTR].prop_id);
 
+out_plane:
 	drmModeFreePlane(plane);
 out_crtc:
 	drmModeFreeCrtc(crtc);
@@ -652,6 +663,9 @@ void output_destroy(struct output *output)
 
 	if (output->mode_blob_id != 0)
 		drmModeDestroyPropertyBlob(device->kms_fd, output->mode_blob_id);
+
+	if (output->repaint_timer_fd >= 0)
+		close(output->repaint_timer_fd);
 
 	free(output);
 }
