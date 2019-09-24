@@ -407,6 +407,8 @@ struct output {
 		bool gl_core;
 		/* Whether or not GL_MESA_framebuffer_flip_y is available */
 		bool have_gl_mesa_framebuffer_flip_y;
+		/* Whether we shall use VAO */
+		bool use_vao;
 	} egl;
 
 	/*
