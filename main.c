@@ -98,7 +98,7 @@ static void atomic_event_handler(int fd,
 {
 	struct device *device = user_data;
 	struct output *output = NULL;
-	struct timespec completion = {
+	struct timespec event_time = {
 		.tv_sec = tv_sec,
 		.tv_nsec = (tv_usec * 1000),
 	};
@@ -118,7 +118,7 @@ static void atomic_event_handler(int fd,
 	}
 
 	/*
-	 * Compare the actual completion timestamp to what we had predicted it
+	 * Compare the actual event timestamp to what we had predicted it
 	 * would be when we submitted it.
 	 *
 	 * This example simply screams into the logs if we hit a different
@@ -128,7 +128,7 @@ static void atomic_event_handler(int fd,
 	 * if that is not possible, halve your frame rate so you can draw
 	 * steadily and predictably, if more slowly.
 	 */
-	delta_nsec = timespec_sub_to_nsec(&completion, &output->next_frame);
+	delta_nsec = timespec_sub_to_nsec(&event_time, &output->next_frame);
 	if (timespec_to_nsec(&output->last_frame) != 0 &&
 	    llabs((long long) delta_nsec) > FRAME_TIMING_TOLERANCE) {
 		debug("[%s] FRAME %" PRIi64 "ns %s: expected %" PRIu64 ", got %" PRIu64 "\n",
@@ -136,15 +136,15 @@ static void atomic_event_handler(int fd,
 		      delta_nsec,
 		      (delta_nsec < 0) ? "EARLY" : "LATE",
 		      timespec_to_nsec(&output->next_frame),
-		      timespec_to_nsec(&completion));
+		      timespec_to_nsec(&event_time));
 	} else {
-		debug("[%s] completed at %" PRIu64 " (delta %" PRIi64 "ns)\n",
+		debug("[%s] flip event time at %" PRIu64 " (delta %" PRIi64 "ns)\n",
 		      output->name,
-		      timespec_to_nsec(&completion),
+		      timespec_to_nsec(&event_time),
 		      delta_nsec);
 	}
 
-	output->last_frame = completion;
+	output->last_frame = event_time;
 
 	/*
 	 * buffer_pending is the buffer we've just committed; this event tells
@@ -189,16 +189,16 @@ static void atomic_event_handler(int fd,
 	output->buffer_last = output->buffer_pending;
 	output->buffer_pending = NULL;
 
-	/* Next frame time is estimated to be completion time plus refresh
+	/* Next frame time is estimated to be flip event time plus refresh
 	 * interval. This timestamp is also used as the presentation time to drive
 	 * the animation progress when repainting outputs.
 	 */
-	timespec_add_nsec(&output->next_frame, &completion, output->refresh_interval_nsec);
+	timespec_add_nsec(&output->next_frame, &event_time, output->refresh_interval_nsec);
 
 	debug("[%s] predicting presentation at %" PRIu64 " (%" PRIu64 "ns / %" PRIu64 "ms away)\n",
 	      output->name, timespec_to_nsec(&output->next_frame),
-	      timespec_sub_to_nsec(&output->next_frame, &completion),
-	      timespec_sub_to_msec(&output->next_frame, &completion));
+	      timespec_sub_to_nsec(&output->next_frame, &event_time),
+	      timespec_sub_to_msec(&output->next_frame, &event_time));
 
 	/* If our driver supports MONOTONIC clock based timestamps, schedule the
 	 * repaint to happen shortly before the next frame will be scanned out.  We
@@ -218,10 +218,10 @@ static void atomic_event_handler(int fd,
 		timespec_add_nsec(&t.it_value, &output->next_frame, -RENDER_LEEWAY_NSEC);
 		debug("[%s] scheduling re-paint at %" PRIu64 " (%" PRIu64 "ns / %" PRIu64 "ms away)\n",
 			  output->name, timespec_to_nsec(&t.it_value),
-			  timespec_sub_to_nsec(&t.it_value, &completion),
-			  timespec_sub_to_msec(&t.it_value, &completion));
+			  timespec_sub_to_nsec(&t.it_value, &event_time),
+			  timespec_sub_to_msec(&t.it_value, &event_time));
 	} else {
-		debug("[%s] scheduling re-paint to be happen immediately\n",
+		debug("[%s] scheduling re-paint to happen immediately\n",
 				output->name);
 	}
 
