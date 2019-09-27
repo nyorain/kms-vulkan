@@ -89,8 +89,8 @@ static struct buffer *find_free_buffer(struct output *output)
  * these times will be given as CLOCK_MONOTONIC values. If not (e.g. VMware),
  * all bets are off.
  */
-static void atomic_event_handler(int fd,
-				 unsigned int sequence,
+static void atomic_event_handler(int fd UNUSED,
+				 unsigned int sequence UNUSED,
 				 unsigned int tv_sec,
 				 unsigned int tv_usec,
 				 unsigned int crtc_id,
@@ -285,7 +285,7 @@ static void sighandler(int signo)
 	return;
 }
 
-int main(int argc, char *argv[])
+int main(int argc UNUSED, char *argv[] UNUSED)
 {
 	struct device *device;
 	struct input *input;
