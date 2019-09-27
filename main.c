@@ -79,10 +79,11 @@ static struct buffer *find_free_buffer(struct output *output)
  * be called one for each output (identified by the crtc_id) for each commit.
  * We will be given the user_data parameter we passed to drmModeAtomicCommit
  * (which for us is just the device struct), as well as the frame sequence
- * counter as well as the actual time that our commit became active in hardware.
+ * counter as well as the time associated with this commit event.
  *
- * This time is usually close to the start of the vblank period of the previous
- * frame, but depends on the driver.
+ * For drivers with "high-precision" timestamp support, this time is usually
+ * close to the time when the first pixels of the next frame will be shown, but
+ * really depends on the driver.
  *
  * If the driver declares DRM_CAP_TIMESTAMP_MONOTONIC in its capabilities,
  * these times will be given as CLOCK_MONOTONIC values. If not (e.g. VMware),
