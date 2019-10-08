@@ -59,7 +59,7 @@
 /* Allow the driver to drift half a millisecond every frame. */
 #define FRAME_TIMING_TOLERANCE (NSEC_PER_SEC / 2000)
 
-/* The amount of nanoseconds a repaint of an output is scheduled before its
+/* The amount of milliseconds a repaint of an output is scheduled before its
  * next estimated KMS commit completion time. There is no guarantee we are
  * going to actually make it with this margin for every GPU out there. */
 #define RENDER_LEEWAY_NSEC (NSEC_PER_MSEC * 5)
