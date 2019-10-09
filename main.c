@@ -52,11 +52,17 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/timerfd.h>
 
 #include "kms-quads.h"
 
 /* Allow the driver to drift half a millisecond every frame. */
 #define FRAME_TIMING_TOLERANCE (NSEC_PER_SEC / 2000)
+
+/* The amount of milliseconds a repaint of an output is scheduled before its
+ * next estimated KMS commit completion time. There is no guarantee we are
+ * going to actually make it with this margin for every GPU out there. */
+#define RENDER_LEEWAY_NSEC (NSEC_PER_MSEC * 5)
 
 static struct buffer *find_free_buffer(struct output *output)
 {
@@ -137,7 +143,6 @@ static void atomic_event_handler(int fd,
 		      delta_nsec);
 	}
 
-	output->needs_repaint = true;
 	output->last_frame = completion;
 
 	/*
@@ -183,59 +188,85 @@ static void atomic_event_handler(int fd,
 	}
 	output->buffer_last = output->buffer_pending;
 	output->buffer_pending = NULL;
-}
 
-/*
- * Advance the output's frame counter, aiming to achieve linear animation
- * speed: if we miss a frame, try to catch up by dropping frames.
- */
-static void advance_frame(struct output *output, struct timespec *now)
-{
-	struct timespec too_soon;
-
-	/* For our first tick, we won't have predicted a time. */
-	if (timespec_to_nsec(&output->last_frame) == 0L)
-		return;
-
-	/*
-	 * Starting from our last frame completion time, advance the predicted
-	 * completion for our next frame by one frame's refresh time, until we
-	 * have at least a 4ms margin in which to paint a new buffer and submit
-	 * our frame to KMS.
-	 *
-	 * This will skip frames in the animation if necessary, so it is
-	 * temporally correct.
+	/* Next frame time is estimated to be completion time plus refresh
+	 * interval. This timestamp is also used as the presentation time to drive
+	 * the animation progress when repainting outputs.
 	 */
-	timespec_add_msec(&too_soon, now, 4);
-	output->next_frame = output->last_frame;
+	timespec_add_nsec(&output->next_frame, &completion, output->refresh_interval_nsec);
 
-	while (timespec_sub_to_nsec(&too_soon, &output->next_frame) >= 0) {
-		timespec_add_nsec(&output->next_frame, &output->next_frame,
-				  output->refresh_interval_nsec);
-		output->frame_num = (output->frame_num + 1) % NUM_ANIM_FRAMES;
+	debug("[%s] predicting presentation at %" PRIu64 " (%" PRIu64 "ns / %" PRIu64 "ms away)\n",
+	      output->name, timespec_to_nsec(&output->next_frame),
+	      timespec_sub_to_nsec(&output->next_frame, &completion),
+	      timespec_sub_to_msec(&output->next_frame, &completion));
+
+	/* If our driver supports MONOTONIC clock based timestamps, schedule the
+	 * repaint to happen shortly before the next frame will be scanned out.  We
+	 * are using timer_fd for that, and set its time relative to the next
+	 * frame's presentation time. We are taking some leeway into account, so
+	 * the frame rendering can actually make the deadline. This technique allows
+	 * a frame to be rendered closely to its presentation time while minimizing
+	 * latency. However, there's the risk that we won't meet the deadline if
+	 * the given leeway is too short.
+	 *
+	 * If the driver doesn't support MONOTONIC timestamps, simply use an
+	 * absolute time that is far in the past so the repaint event will be
+	 * scheduled as soon as possible. */
+	struct itimerspec t = { .it_interval = { 0, 0 }, .it_value = { 0, 1 } };
+	if (device->monotonic_timestamps)
+	{
+		timespec_add_nsec(&t.it_value, &output->next_frame, -RENDER_LEEWAY_NSEC);
+		debug("[%s] scheduling re-paint at %" PRIu64 " (%" PRIu64 "ns / %" PRIu64 "ms away)\n",
+			  output->name, timespec_to_nsec(&t.it_value),
+			  timespec_sub_to_nsec(&t.it_value, &completion),
+			  timespec_sub_to_msec(&t.it_value, &completion));
+	} else {
+		debug("[%s] scheduling re-paint to be happen immediately\n",
+				output->name);
 	}
+
+	int ret = timerfd_settime(output->repaint_timer_fd, TFD_TIMER_ABSTIME, &t, NULL);
+	if (ret < 0)
+		error("failed to set timerfd time: %s\n", strerror(errno));
 }
 
 static void repaint_one_output(struct output *output, drmModeAtomicReqPtr req,
+			       const struct timespec *anim_start,
 			       bool *needs_modeset)
 {
 	struct timespec now;
 	struct buffer *buffer;
-	int ret;
-
-	ret = clock_gettime(CLOCK_MONOTONIC, &now);
-	assert(ret == 0);
+	float anim_progress = 0;
 
 	/*
-	 * Find a free buffer, predict the time our next frame will be
-	 * displayed, use this to derive a target position for our animation
-	 * (such that it remains as linear as possible over time, even at
-	 * the cost of dropping frames), render the content for that position.
+	 * Find a free buffer we can use to render into
 	 */
 	buffer = find_free_buffer(output);
 	assert(buffer);
-	advance_frame(output, &now);
-	buffer_fill(buffer, output->frame_num);
+
+	if (timespec_to_nsec(&output->last_frame) == 0UL)
+	{
+		/*
+		 * If this output hasn't been painted before, then we need to set
+		 * ALLOW_MODESET so we can get our first buffer on screen; if we
+		 * have already presented to this output, then we don't need to since
+		 * our configuration is similar enough.
+		 */
+		*needs_modeset = true;
+		debug("[%s] scheduling first frame\n", output->name);
+	} else {
+		/*
+		 * Use the next frame's presentation time to determine
+		 * the progress of the animation loop, and then render the content for
+		 * that position. Since this calculation is based on absolute timing
+		 * it will naturally catch up with dropped frames.
+		 */
+		int64_t abs_delta_nsec = timespec_sub_to_nsec(&output->next_frame, anim_start);
+		int64_t rel_delta_nsec = abs_delta_nsec % ANIMATION_LOOP_DURATION_NSEC;
+		anim_progress = (float)rel_delta_nsec / ANIMATION_LOOP_DURATION_NSEC;
+	}
+
+	buffer_fill(buffer, anim_progress);
 
 	/* Add the output's new state to the atomic modesetting request. */
 	output_add_atomic_req(output, req, buffer);
@@ -243,24 +274,6 @@ static void repaint_one_output(struct output *output, drmModeAtomicReqPtr req,
 	output->buffer_pending = buffer;
 	output->needs_repaint = false;
 
-	/*
-	 * If this output hasn't been painted before, then we need to set
-	 * ALLOW_MODESET so we can get our first buffer on screen; if we
-	 * have already presented to this output, then we don't need to since
-	 * our configuration is similar enough.
-	 */
-	if (timespec_to_nsec(&output->last_frame) == 0UL)
-		*needs_modeset = true;
-
-	if (timespec_to_nsec(&output->next_frame) != 0UL) {
-		debug("[%s] predicting presentation at %" PRIu64 " (%" PRIu64 "ns / %" PRIu64 "ms away)\n",
-		      output->name,
-		      timespec_to_nsec(&output->next_frame),
-		      timespec_sub_to_nsec(&output->next_frame, &now),
-		      timespec_sub_to_msec(&output->next_frame, &now));
-	} else {
-		debug("[%s] scheduling first frame\n", output->name);
-	}
 }
 
 static bool shall_exit = false;
@@ -277,6 +290,7 @@ int main(int argc, char *argv[])
 	struct device *device;
 	struct input *input;
 	int ret = 0;
+	struct timespec anim_start;
 
 	struct sigaction sa;
 	sa.sa_handler = sighandler;
@@ -301,6 +315,10 @@ int main(int argc, char *argv[])
 #else
 	input = NULL;
 #endif
+
+	/* we poll each output and the KMS master FD */
+	int num_poll_fds = device->num_outputs + 1;
+	struct pollfd * poll_fds = calloc(num_poll_fds, sizeof(*poll_fds));
 
 	/*
 	 * Allocate framebuffers to display on all our outputs.
@@ -330,6 +348,31 @@ int main(int argc, char *argv[])
 				goto out;
 			}
 		}
+
+		/* each output has an individual timer to shedule repainting. We are
+		 * polling each one in our main loop
+		 */
+		poll_fds[i] = (struct pollfd) {
+			.fd = output->repaint_timer_fd,
+			.events = POLLIN,
+		};
+	}
+
+	poll_fds[device->num_outputs] = (struct pollfd) {
+		.fd = device->kms_fd,
+		.events = POLLIN,
+	};
+
+	drmEventContext evctx = {
+		.version = 3,
+		.page_flip_handler2 = atomic_event_handler,
+	};
+
+	ret = clock_gettime(CLOCK_MONOTONIC, &anim_start);
+	if (ret < 0)
+	{
+		ret = 4;
+		goto out;
 	}
 
 	/* Our main rendering loop, which we spin forever. */
@@ -338,14 +381,6 @@ int main(int argc, char *argv[])
 		bool needs_modeset = false;
 		int output_count = 0;
 		int ret = 0;
-		drmEventContext evctx = {
-			.version = 3,
-			.page_flip_handler2 = atomic_event_handler,
-		};
-		struct pollfd poll_fd = {
-			.fd = device->kms_fd,
-			.events = POLLIN,
-		};
 
 		/*
 		 * Allocate an atomic-modesetting request structure for any
@@ -377,7 +412,7 @@ int main(int argc, char *argv[])
 				 * Add this output's new state to the atomic
 				 * request.
 				 */
-				repaint_one_output(output, req, &needs_modeset);
+				repaint_one_output(output, req, &anim_start, &needs_modeset);
 				output_count++;
 			}
 		}
@@ -396,7 +431,7 @@ int main(int argc, char *argv[])
 		 * phase from each other, without dropping our frame rate to
 		 * the lowest common denominator.
 		 *
-		 * It does mean that we need to allocate paint the buffers for
+		 * It does mean that we need to paint the buffers for
 		 * each output individually, rather than having a single buffer
 		 * with the content for every output.
 		 */
@@ -416,7 +451,8 @@ int main(int argc, char *argv[])
 		 */
 		for (int i = 0; i < device->num_outputs; i++) {
 			struct output *output = device->outputs[i];
-			if (output->explicit_fencing && output->buffer_last) {
+			if (output->explicit_fencing && output->commit_fence_fd >= 0 &&
+			    output->buffer_last) {
 				assert(linux_sync_file_is_valid(output->commit_fence_fd));
 				fd_replace(&output->buffer_last->kms_fence_fd,
 					   output->commit_fence_fd);
@@ -425,22 +461,52 @@ int main(int argc, char *argv[])
 		}
 
 		/*
-		 * Now we have (maybe) repainted some outputs, we go to sleep
-		 * waiting for completion events from KMS. As each output
-		 * completes, we will receive one event per output (making
-		 * the DRM FD be readable and waking us from poll), which we
-		 * then dispatch through drmHandleEvent into our callback.
+		 * Now we have (maybe) repainted some outputs, we go to sleep waiting
+		 * for either output repaint events or completion events from KMS. As
+		 * each output completes, we will receive one event per output (making
+		 * the DRM FD be readable and waking us from poll), which we then
+		 * dispatch through drmHandleEvent into our callback.
 		 */
-		ret = poll(&poll_fd, 1, -1);
+		ret = poll(poll_fds, num_poll_fds, -1);
 		if (ret == -1) {
-			fprintf(stderr, "error polling KMS FD: %d\n", ret);
+			fprintf(stderr, "error polling FDs: %d\n", ret);
 			break;
 		}
 
-		ret = drmHandleEvent(device->kms_fd, &evctx);
-		if (ret == -1) {
-			fprintf(stderr, "error reading KMS events: %d\n", ret);
-			break;
+		for (int i = 0; i < num_poll_fds; ++i) {
+			if (!(poll_fds[i].revents & POLLIN))
+				continue;
+
+			if (i < device->num_outputs) {
+				/* For any output repaint event, we mark its output to get
+				 * repainted. The repainting will happen at the top of our main
+				 * loop, immediately after all events from FDs have been
+				 * handled.
+				 */
+				device->outputs[i]->needs_repaint = true;
+
+				/* disarm timer_fd, so subsequent polls won't wake up anymore
+				 * until a new wakeup time is set*/
+				static const struct itimerspec its = {
+					.it_interval = {0, 0},
+					.it_value = {0, 0}
+				};
+				int ret = timerfd_settime(device->outputs[i]->repaint_timer_fd,
+							  TFD_TIMER_ABSTIME, &its, NULL);
+				if (ret < 0)
+				{
+					error("failed set timerfd time: %s\n", strerror(errno));
+					ret = -1;
+					goto out;
+				}
+			} else {
+				/* The KMS master FD was signaled. Handle any pending DRM events */
+				ret = drmHandleEvent(device->kms_fd, &evctx);
+				if (ret == -1) {
+					fprintf(stderr, "error reading KMS events: %d\n", ret);
+					break;
+				}
+			}
 		}
 
 		if (input)

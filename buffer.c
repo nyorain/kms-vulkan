@@ -42,12 +42,12 @@
  * Using the CPU mapping, fill the buffer with a simple pixel-by-pixel
  * checkerboard; the boundaries advance from top-left to bottom-right.
  */
-void buffer_fill(struct buffer *buffer, int frame_num)
+void buffer_fill(struct buffer *buffer, float anim_progress)
 {
 	struct output *output = buffer->output;
 
 	if (buffer->gbm.bo) {
-		buffer_egl_fill(buffer, frame_num);
+		buffer_egl_fill(buffer, anim_progress);
 		return;
 	}
 
@@ -59,7 +59,7 @@ void buffer_fill(struct buffer *buffer, int frame_num)
 		uint8_t b;
 		uint32_t *pix =
 			(uint32_t *) ((uint8_t *) buffer->dumb.mem + (y * buffer->pitches[0]));
-		if (y >= (buffer->height * output->frame_num) / NUM_ANIM_FRAMES)
+		if (y >= (buffer->height * anim_progress))
 			b = 0xff;
 		else
 			b = 0;
@@ -67,7 +67,7 @@ void buffer_fill(struct buffer *buffer, int frame_num)
 		for (unsigned int x = 0; x < buffer->width; x++) {
 			uint32_t r;
 
-			if (x >= (buffer->width * output->frame_num) / NUM_ANIM_FRAMES)
+			if (x >= (buffer->width * anim_progress))
 				r = 0xff;
 			else
 				r = 0;

@@ -835,10 +835,10 @@ void buffer_egl_destroy(struct device *device, struct buffer *buffer)
  *     y = [-1 .. 1] (bottom ... top)
  *
  */
-static void fill_verts(GLfloat *verts, GLfloat *col, int frame_num, int loc)
+static void fill_verts(GLfloat *verts, GLfloat *col, float anim_progress, int loc)
 {
 	/* factor is in range [-1 .. 1] */
-	float factor = ((frame_num * 2.0) / (float) NUM_ANIM_FRAMES) - 1.0f;
+	float factor = anim_progress * 2.0 - 1.0f;
 	GLfloat top, bottom, left, right;
 
 	assert(loc >= 0 && loc < 4);
@@ -901,7 +901,7 @@ static void fill_verts(GLfloat *verts, GLfloat *col, int frame_num, int loc)
 }
 
 void
-buffer_egl_fill(struct buffer *buffer, int frame_num)
+buffer_egl_fill(struct buffer *buffer, float anim_progress)
 {
 	struct output *output = buffer->output;
 	struct device *device = output->device;
@@ -977,7 +977,7 @@ buffer_egl_fill(struct buffer *buffer, int frame_num)
 		GLfloat col[4];
 		GLfloat verts[8];
 		GLuint err = glGetError();
-		fill_verts(verts, col, frame_num, i);
+		fill_verts(verts, col, anim_progress, i);
 		glBindBuffer(GL_ARRAY_BUFFER, output->egl.vbo);
 		/* glBufferSubData is most supported across GLES2 / Core profile,
 		 * Core profile / GLES3 might have better ways */

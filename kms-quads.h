@@ -87,7 +87,9 @@ struct input;
 
 
 #define BUFFER_QUEUE_DEPTH 3 /* how many buffers to allocate per output */
-#define NUM_ANIM_FRAMES 240 /* how many frames before we wrap around */
+
+/* how long until animation wraps over */
+#define ANIMATION_LOOP_DURATION_NSEC (4u*1000000000u)
 
 
 /**
@@ -385,14 +387,12 @@ struct output {
 	/*
 	 * Time the last frame's commit completed from KMS, and when the
 	 * next frame's commit is predicted to complete.
+	 *
+	 * For most drivers, this timestamp is a reasonable estimate for the actual
+	 * presentation time of a frame.
 	 */
 	struct timespec last_frame;
 	struct timespec next_frame;
-
-	/*
-	 * The frame of the animation to display.
-	 */
-	unsigned int frame_num;
 
 	struct {
 		EGLConfig cfg;
@@ -408,6 +408,15 @@ struct output {
 		/* Whether or not GL_MESA_framebuffer_flip_y is available */
 		bool have_gl_mesa_framebuffer_flip_y;
 	} egl;
+
+	/*
+	 * A timer FD that fires whenever the output needs to repaint. The wake-up
+	 * time of this timer is set in the KMS event handler, i.e.  after each
+	 * completed KMS commit we schedule the rendering for the next frame. Our
+	 * main loop polls this timer, and then actually calls the painting routine
+	 * on this output.
+	 */
+	int repaint_timer_fd;
 };
 
 /*
@@ -460,6 +469,9 @@ struct device {
 
 	/* logind session, if any */
 	struct logind *session;
+
+	/* whether the device reports timestamps relative to MONOTONIC clock */
+	bool monotonic_timestamps;
 };
 
 /*
@@ -486,9 +498,9 @@ struct buffer *buffer_egl_create(struct device *device, struct output *output);
 void buffer_destroy(struct buffer *buffer);
 void buffer_egl_destroy(struct device *device, struct buffer *buffer);
 
-/* Fill a buffer for a given animation step. */
-void buffer_fill(struct buffer *buffer, int frame_num);
-void buffer_egl_fill(struct buffer *buffer, int frame_num);
+/* Fill a buffer for a given animation progress (0..1) */
+void buffer_fill(struct buffer *buffer, float anim_progress);
+void buffer_egl_fill(struct buffer *buffer, float anim_progress);
 
 /*
  * Adds an output's state to an atomic request, setting it up to display a
