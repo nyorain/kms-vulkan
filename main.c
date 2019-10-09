@@ -156,8 +156,7 @@ static void atomic_event_handler(int fd,
 	if (output->explicit_fencing) {
 		/*
 		 * Print the time that the KMS fence FD signaled, i.e. when the
-		 * last commit completed. It should be the same time as passed
-		 * to this event handler in the function arguments.
+		 * last commit completed.
 		 */
 		if (output->buffer_last &&
 		    output->buffer_last->kms_fence_fd >= 0) {
