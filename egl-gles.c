@@ -246,6 +246,10 @@ egl_create_context(struct output *output)
 	};
 	EGLint *attrib_version = &attribs[1];
 
+	/* OpenGL Vertex Array Objects are available in GLES3 and required in
+	 * GLCore */
+	output->egl.use_vao = true;
+
 	if (getenv("GL_CORE"))
 	{
 	    output->egl.gl_core = true;
@@ -286,16 +290,18 @@ egl_create_context(struct output *output)
 	if (ret)
 		return ret;
 
-	debug("couldn't create GLES3 context, falling back\n");
+	if (!output->egl.gl_core) {
+		debug("couldn't create GLES3 context, falling back\n");
+		/* GLES2 doesn't have VAO support, and some drivers
+		 * don't handle even VBOs very well */
+		*attrib_version = 2;
+		/* As a last-ditch attempt, try an ES2 context. */
+		ret = eglCreateContext(device->egl_dpy, output->egl.cfg,
+				       EGL_NO_CONTEXT, attribs);
+		if (ret)
+			return ret;
 
-	if (!output->egl.gl_core)
-	{
-	    *attrib_version = 2;
-	    /* As a last-ditch attempt, try an ES2 context. */
-	    ret = eglCreateContext(device->egl_dpy, output->egl.cfg,
-				   EGL_NO_CONTEXT, attribs);
-	    if (ret)
-		    return ret;
+		output->egl.use_vao = false;
 	}
 
 	error("couldn't create any EGL context!\n");
@@ -439,6 +445,8 @@ output_egl_setup(struct output *output)
 				found_sync = true;
 			else if (strcmp((const char *) ext, "GL_MESA_framebuffer_flip_y") == 0)
 				output->egl.have_gl_mesa_framebuffer_flip_y = true;
+			else if (strcmp((const char *) ext, "GL_OES_vertex_array_object") == 0)
+				output->egl.use_vao = true;
 		}
 
 		if (!found_image) {
@@ -504,16 +512,17 @@ output_egl_setup(struct output *output)
 	glBufferData(GL_ARRAY_BUFFER, sizeof(GLfloat) * 8, NULL, GL_DYNAMIC_DRAW);
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-	glGenVertexArrays(1, &output->egl.vao);
-	glBindVertexArray(output->egl.vao);
+	if (output->egl.use_vao) {
+		glGenVertexArrays(1, &output->egl.vao);
+		glBindVertexArray(output->egl.vao);
 
-	glBindBuffer(GL_ARRAY_BUFFER, output->egl.vbo);
+		glBindBuffer(GL_ARRAY_BUFFER, output->egl.vbo);
+		glVertexAttribPointer(output->egl.pos_attr, 2, GL_FLOAT, GL_FALSE, 0, (char *)(NULL));
+		glEnableVertexAttribArray(output->egl.pos_attr);
 
-	glVertexAttribPointer(output->egl.pos_attr, 2, GL_FLOAT, GL_FALSE, 0, (char*)(NULL));
-	glEnableVertexAttribArray(0);
-
-	glBindBuffer(GL_ARRAY_BUFFER, 0);
-	glBindVertexArray(0);
+		glBindBuffer(GL_ARRAY_BUFFER, 0);
+		glBindVertexArray(0);
+	}
 
 	return true;
 err_program:
@@ -532,7 +541,8 @@ output_egl_destroy(struct device* device, struct output *output)
 			     output->egl.ctx);
 	assert(ret);
 
-	glDeleteVertexArrays(1, &output->egl.vao);
+	if (output->egl.use_vao)
+		glDeleteVertexArrays(1, &output->egl.vao);
 	glDeleteBuffers(1, &output->egl.vbo);
 	glDeleteProgram(output->egl.gl_prog);
 	eglDestroyContext(output->device->egl_dpy, output->egl.ctx);
@@ -983,10 +993,24 @@ buffer_egl_fill(struct buffer *buffer, float anim_progress)
 		 * Core profile / GLES3 might have better ways */
 		glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(GLfloat) * 8, verts);
 		glBindBuffer(GL_ARRAY_BUFFER, 0);
-		glBindVertexArray(output->egl.vao);
+
+		if (output->egl.use_vao) {
+			glBindVertexArray(output->egl.vao);
+		} else {
+			glBindBuffer(GL_ARRAY_BUFFER, output->egl.vbo);
+			glVertexAttribPointer(output->egl.pos_attr, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+			glEnableVertexAttribArray(output->egl.pos_attr);
+			glBindBuffer(GL_ARRAY_BUFFER, 0);
+		}
+
 		glUniform4f(output->egl.col_uniform, col[0], col[1], col[2], col[3]);
 		glDrawArrays(GL_TRIANGLE_FAN, 0, 4);
-		glBindVertexArray(0);
+
+		if (output->egl.use_vao)
+			glBindVertexArray(0);
+		else
+			glDisableVertexAttribArray(output->egl.pos_attr);
+
 		err = glGetError();
 		if (err != GL_NO_ERROR)
 			debug("GL error state 0x%x\n", err);
