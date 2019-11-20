@@ -140,7 +140,7 @@ static const char *vulkan_strerror(VkResult err) {
 		default:
 			return "<unknown>";
 	}
-	#undef STR
+	#undef ERR_STR
 }
 
 static VkImageAspectFlagBits mem_plane_ascpect(unsigned i)
@@ -257,8 +257,8 @@ bool match(drmPciBusInfoPtr pci_bus_info, VkPhysicalDevice phdev,
 	VkResult res;
 	res = vkEnumerateDeviceExtensionProperties(phdev, NULL,
 		extc, NULL);
-	if ((res != VK_SUCCESS) || (exts == 0)) {
-		exts = 0;
+	if ((res != VK_SUCCESS) || (*extc == 0)) {
+		*extc = 0;
 		vk_error(res, "Could not enumerate device extensions (1)");
 		return false;
 	}
@@ -749,7 +749,7 @@ struct vk_device *vk_device_create(struct device *device)
 	VkQueueFamilyProperties *qprops = calloc(sizeof(*qprops), qfam_count);
 	vkGetPhysicalDeviceQueueFamilyProperties(phdev, &qfam_count, qprops);
 
-	uint32_t qfam = 0xFFFFFFu; // graphics queue family
+	uint32_t qfam = 0xFFFFFFFFu; // graphics queue family
 	for (unsigned i = 0u; i < qfam_count; ++i) {
 		if (qprops[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
 			qfam = i;
