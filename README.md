@@ -127,6 +127,9 @@ As you can see, the whole vulkan support for KMS is still rather experimental
 and not widely supported. I hope to keep this application updated as more
 drivers receive correct upstream support for all the required extensions.
 
+__NOTE__: this has some issues and is slightly outdated by now. For a better,
+full implementation, look e.g. at the [vulkan renderer of wlroots](https://github.com/swaywm/wlroots/pull/2771)
+
 ## What is atomic modesetting?
 
 Atomic modesetting is a relatively recent development of the KMS API to apply
