@@ -19,18 +19,25 @@ system:
 When run from a text terminal with no arguments, it takes over the terminal and
 displays a simple animation run independently on all currently-active displays:
 ```shell
-  # ./build/kms-quads
+  $ ./build/kms-quads
 ```
 Press ESC to quit the sample to go back to your terminal (requires
-libinput/libudev).
+libinput/libudev). Without libinput/libudev you can still run as root
+and kill it after some time (SIGINT is handled by the program to 
+correctly clean up). This is important to correctly restore the
+previous monitor mode.
+
+```shell
+  # ./build/kms-quads & (sleep 10; pkill -INT kms-quads)
+```
 
 kms-quads uses logind to switch the current TTY to graphical mode, and to
 access KMS resources as an unprivileged user. In case logind can't be used,
 kms-quads attempts to directly switch the TTY mode (requires root), for which a
 specific TTY can be set through an environment variable, or as stdin:
 ```shell
-  # TTYNO=4 ./build/kms-quads
-  # ./build/kms-quads < /dev/tty4
+  $ TTYNO=4 ./build/kms-quads
+  $ ./build/kms-quads < /dev/tty4
 ```
 
 During startup, kms-quads will iterate through all the available KMS resources,
@@ -38,14 +45,6 @@ create output chains for all available outputs, render an initial image, and
 send an initial atomic modesetting request to show the initial image on all
 outputs. After this, each output will independently run its own repaint loop
 displaying a timed animation.
-
-**NOTE: by default, kms-quads will run indefinietly without any method
-of switching the vt. Unless you would like to be stuck with the program,
-you probably rather want to run something like this (SIGINT is handled
-by the program to correctly clean up):**
-```shell
-  # ./build/kms-quads & (sleep 10; pkill -INT kms-quads)
-```
 
 Afterwards you will be able to switch the vt. If the program crashes,
 you might in bad cases also be stuck without any method (known to me)
@@ -115,20 +114,9 @@ request](https://gitlab.freedesktop.org/mesa/mesa/merge_requests/515) for
 anv, the intel vulkan driver. The application was tested and verified
 to work with that implementation on an intel gpu.
 
-**Important:** Theoretically, the `VK_EXT_queue_family_foreign` extension
-is needed as well. The vulkan standard states that `VK_QUEUE_FAMILY_FOREIGN_EXT`
-has to be used to transfer ownership of an image to a non-vulkan image
-user (the drm subsystem). There is no (up-to-date) mesa patch for this extension
-for any desktop vulkan driver though so we currently fall back to using
-`VK_QUEUE_FAMILY_EXTERNAL`, but this **isn't guaranteed to work**! Once the
-extension is supported on any driver, a patch will be trivial.
-
 As you can see, the whole vulkan support for KMS is still rather experimental
 and not widely supported. I hope to keep this application updated as more
 drivers receive correct upstream support for all the required extensions.
-
-__NOTE__: this has some issues and is slightly outdated by now. For a better,
-full implementation, look e.g. at the [vulkan renderer of wlroots](https://github.com/swaywm/wlroots/pull/2771)
 
 ## What is atomic modesetting?
 

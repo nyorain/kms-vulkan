@@ -703,12 +703,7 @@ struct vk_device *vk_device_create(struct device *device)
 		VK_EXT_EXTERNAL_MEMORY_DMA_BUF_EXTENSION_NAME,
 		VK_EXT_IMAGE_DRM_FORMAT_MODIFIER_EXTENSION_NAME,
 		VK_KHR_IMAGE_FORMAT_LIST_EXTENSION_NAME, // required by drm ext
-
-		// NOTE: strictly speaking this extension is required to
-		// correctly transfer image ownership but since no mesa
-		// driver implements its yet (no even an updated patch for that),
-		// let's see how far we get without it
-		// VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
+		VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME,
 	};
 
 	for (unsigned i = 0u; i < ARRAY_LENGTH(mem_exts); ++i) {
@@ -1294,15 +1289,7 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	// to the mapped ubo here (that happens every frame) because
 	// vkQueueSubmit implicitly inserts such a dependency
 
-	// acquire ownership of the image we want to render
-	// XXX: as already mentioned on device creation, strictly
-	// speaking we need queue_family_foreign here. But since that
-	// isn't supported on any mesa driver yet (not even a pr) we
-	// try our luck with queue_family_external (which should work for
-	// same gpu i guess?). But again: THIS IS NOT GUARANTEED TO WORK,
-	// THE STANDARD DOESN'T SUPPORT IT. JUST A TEMPORARY DROP-IN UNTIL
-	// THE REAL THING IS SUPPORTED
-	uint32_t ext_qfam = VK_QUEUE_FAMILY_EXTERNAL;
+	const uint32_t ext_qfam = VK_QUEUE_FAMILY_FOREIGN_EXT;
 
 	VkImageMemoryBarrier barrier = {0};
 	barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -1460,11 +1447,7 @@ void buffer_vk_destroy(struct device *device, struct buffer *buffer)
 	for (unsigned i = 0u; i < 4u; ++i) {
 		if (img->memories[i]) {
 			// will implicitly be unmapped
-			// TODO: this currently gives a segmentation fault in
-			// the validation layers, probably an error there
-			// so not doing it here is the cause for the validation layers
-			// to complain about not destroyed memory at the moment
-			// vkFreeMemory(vk_dev->dev, img->memories[i], NULL);
+			vkFreeMemory(vk_dev->dev, img->memories[i], NULL);
 		}
 	}
 	if (img->buffer.gbm.bo) {
