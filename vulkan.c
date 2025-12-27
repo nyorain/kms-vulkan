@@ -746,7 +746,7 @@ struct vk_device *vk_device_create(struct device *device)
 	// queue families
 	uint32_t qfam_count;
 	vkGetPhysicalDeviceQueueFamilyProperties(phdev, &qfam_count, NULL);
-	VkQueueFamilyProperties *qprops = calloc(sizeof(*qprops), qfam_count);
+	VkQueueFamilyProperties *qprops = calloc(qfam_count, sizeof(*qprops));
 	vkGetPhysicalDeviceQueueFamilyProperties(phdev, &qfam_count, qprops);
 
 	uint32_t qfam = 0xFFFFFFFFu; // graphics queue family
@@ -1052,13 +1052,14 @@ struct buffer *buffer_vk_create(struct device *device, struct output *output)
 	// create image (for dedicated allocation)
 	VkImageCreateInfo img_info = {0};
 	img_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+	img_info.tiling = VK_IMAGE_TILING_DRM_FORMAT_MODIFIER_EXT;
 	img_info.imageType = VK_IMAGE_TYPE_2D;
 	img_info.format = format;
 	img_info.mipLevels = 1;
 	img_info.arrayLayers = 1;
 	img_info.samples = VK_SAMPLE_COUNT_1_BIT;
 	img_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-	img_info.initialLayout = VK_IMAGE_LAYOUT_PREINITIALIZED;
+	img_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 	img_info.extent.width = width;
 	img_info.extent.height = height;
 	img_info.extent.depth = 1;
@@ -1544,7 +1545,6 @@ bool buffer_vk_fill(struct buffer *buffer, float anim_progress)
 		isi.handleType = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_SYNC_FD_BIT;
 		isi.fd = dup(buffer->kms_fence_fd);
 		isi.flags = VK_SEMAPHORE_IMPORT_TEMPORARY_BIT;
-		isi.fd = buffer->kms_fence_fd;
 		isi.semaphore = img->buffer_semaphore;
 		res = vk_dev->api.importSemaphoreFdKHR(vk_dev->dev, &isi);
 		if (res != VK_SUCCESS) {

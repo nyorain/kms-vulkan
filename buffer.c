@@ -47,7 +47,6 @@ void buffer_fill(struct buffer *buffer, float anim_progress)
 	struct output *output = buffer->output;
 
 	if (buffer->gbm.bo) {
-		buffer_egl_fill(buffer, anim_progress);
 		if (buffer->output->device->vk_device) {
 			// TODO: handle return value
 			buffer_vk_fill(buffer, anim_progress);
