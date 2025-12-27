@@ -102,21 +102,7 @@ back the previously implemented EGL or dumb buffer rendering backend.
 The EGL/dumb buffer renderer show simple moving colored quads (hence
 the original project name) while the vulkan renderer currently shows a
 smoothly animated color wheel. This way you can know which renderer
-is used, but it will obviously also be logged.
-
-Vulkan can only import dma buffer images if their format modifier is known.
-It additionally needs a couple of extension. At the time of writing (May 2019),
-AMD has no support for drm format modifiers at all, so vulkan importing won't
-work on AMD hardware (*yet, hopefully*).
-Support for the required `VK_EXT_image_drm_format_modifier`
-extension is not merged into mesa upstream yet, but there exists a [merge
-request](https://gitlab.freedesktop.org/mesa/mesa/merge_requests/515) for
-anv, the intel vulkan driver. The application was tested and verified
-to work with that implementation on an intel gpu.
-
-As you can see, the whole vulkan support for KMS is still rather experimental
-and not widely supported. I hope to keep this application updated as more
-drivers receive correct upstream support for all the required extensions.
+is used, but it will also be logged.
 
 ## What is atomic modesetting?
 
