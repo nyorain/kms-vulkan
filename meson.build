@@ -53,6 +53,7 @@ foreach shader : shaders_src
 endforeach
 
 sources = files('main.c', 'buffer.c', 'device.c', 'edid.c', 'egl-gles.c', 'kms.c', 'vulkan.c')
+sources += [shaders]
 
 logind = dependency('lib' + get_option('logind-provider'), required: get_option('logind'), version: '>=237')
 
